@@ -1,66 +1,43 @@
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["setuptools>=67", "setuptools-git-versioning"]
+build-backend = "setuptools.build_meta"
 
 [project]
-name = "pg-sync-roles"
-version = "0.0.0.dev0"
+requires-python = "~=3.12.0"
+dynamic = ["dependencies", "optional-dependencies", "version"]
+
+name = "sync-roles"
+description = "Python utility function to ensure that a DB roles have certain permissions."
+readme = "README.md"
+
 authors = [
   { name="Department for Business and Trade", email="sre@digital.trade.gov.uk" },
+  { name="Roberto Lapuente Romo", email="roberto@lapuente.me" },
 ]
-description = "Python utility function to ensure that a PostgreSQL role has certain permissions or role memberships"
-readme = "README.md"
-requires-python = ">=3.7"
+maintainers = [
+  { name="Roberto Lapuente Romo", email="roberto@lapuente.me" },
+]
+
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
 ]
-dependencies = [
-    "sqlalchemy>=1.4.24",
-]
 
 [project.urls]
-"Source" = "https://github.com/uktrade/pg-sync-roles"
+Repository = "https://github.com/elpinchetopo/sync-roles"
 
-[project.optional-dependencies]
-dev = [
-  "pytest>=7.4.4",
-  "wrapt>=1.4.1",
-]
-ci = [
-  "pytest==7.4.4",
-  # At the time of writing, 1.14.1 is the latest version of wrapt that the latest version of
-  # elastic-apm can be installed with
-  "wrapt==1.14.1",
-  "pytest-cov",
-]
-ci-psycopg2-sqlalchemy1 = [
-    "psycopg2==2.9.2",
-    "sqlalchemy==1.4.24",
-]
-ci-psycopg2-9-10-sqlalchemy1 = [
-    "psycopg2==2.9.10",
-    "sqlalchemy==1.4.24",
-]
-ci-psycopg2-sqlalchemy2 = [
-    "psycopg2==2.9.2",
-    "sqlalchemy==2.0.0",
-]
-ci-psycopg2-9-10-sqlalchemy2-0-31 = [
-    "psycopg2==2.9.10",
-    "sqlalchemy==2.0.31",
-]
-ci-psycopg3-sqlalchemy2 = [
-    "psycopg==3.1.4",
-    "sqlalchemy==2.0.0",
-]
-ci-psycopg3-sqlalchemy2-0-31 = [
-    "psycopg==3.1.4",
-    "sqlalchemy==2.0.31",
-]
+################################################################################
 
-[tool.hatch.build]
-include = [
-  "pg_sync_roles.py"
-]
+[tool.setuptools]
+include-package-data = false
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements/prod.txt"] }
+optional-dependencies = { dev = { file = ["requirements/dev.txt"] } }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools-git-versioning]
+enabled = true
