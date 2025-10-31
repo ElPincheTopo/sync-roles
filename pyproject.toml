@@ -41,6 +41,79 @@ where = ["src"]
 
 [tool.setuptools-git-versioning]
 enabled = true
+
+################################################################################
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = [
+    "A",
+    # "ANN",
+    "B",
+    "C4",
+    # "C90",
+    "COM",
+    "D",
+    # "DOC",  # Currently in preview status
+    "E",
+    "ERA",
+    "EXE",
+    "F",
+    "FA",
+    "FURB",
+    "I",
+    "ICN",
+    "INP",
+    "ISC",
+    "LOG",
+    "N",
+    "PIE",
+    "PT",
+    "PTH",
+    "PYI",
+    "Q",
+    "RET",
+    "RSE",
+    "RUF",
+    "S",
+    "SIM",
+    "T10",
+    "T20",
+    "UP",
+    "W",
+    "YTT",
+]
+ignore = ["S608"]
+
+
+[tool.ruff.format]
+quote-style = "single"
+indent-style = "space"
+
+[tool.ruff.lint.flake8-quotes]
+inline-quotes = "single"
+
+[tool.ruff.lint.isort]
+force-single-line = true
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+"test_pg_sync_roles.py" = ["ANN", "D", "PT007", "S101", "S106", "E501"]
+
+################################################################################
+
+[tool.mypy]
+python_version = "3.12"
+warn_return_any = true
+warn_unused_configs = true
+packages = ["sync_roles"]
+
+
 ################################################################################
 
 [tool.pytest.ini_options]

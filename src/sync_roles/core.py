@@ -1,14 +1,19 @@
-from enum import Enum
-from functools import partial
+"""Core package with main `sync_roles()` function and related classes."""
+
+import logging
+import re
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Union
+from enum import Enum
+from functools import partial
+from types import ModuleType
 from uuid import uuid4
-import logging
-import re
 
 import sqlalchemy as sa
+
+sql2: ModuleType | None
+sql3: ModuleType | None
 
 try:
     from psycopg2 import sql as sql2
@@ -22,21 +27,43 @@ except ImportError:
 
 logger = logging.getLogger()
 
+
 class Privilege(Enum):
+    """Enumeration of database/object privileges.
+
+    Each member denotes a specific privilege that can be granted to roles or users
+    (e.g., on tables, schemas, functions, or the database). Members carry stable
+    integer values used for compact storage and serialization.
+    """
+
     SELECT = 1
+    """Read/select rows from tables or views."""
     INSERT = 2
+    """Insert new rows into tables."""
     UPDATE = 3
+    """Update existing rows."""
     DELETE = 4
+    """Delete rows."""
     TRUNCATE = 5
+    """Remove all rows from a table quickly."""
     REFERENCES = 6
+    """Grant foreign-key references to a table."""
     TRIGGER = 7
+    """Create triggers on tables."""
     CREATE = 8
+    """Create new objects (e.g., tables, schemas)."""
     CONNECT = 9
+    """Connect to the database."""
     TEMPORARY = 10
+    """Create temporary tables."""
     EXECUTE = 11
+    """Execute functions or procedures."""
     USAGE = 12
+    """Use an object (e.g., schema, sequence) without altering it."""
     SET = 13
+    """Set certain run-time parameters for a role/session."""
     ALTER_SYSTEM = 14
+    """Alter system-wide settings."""
 
 
 SELECT = Privilege.SELECT
@@ -57,41 +84,124 @@ ALTER_SYSTEM = Privilege.ALTER_SYSTEM
 
 @dataclass(frozen=True)
 class DatabaseConnect:
+    """Representation the target database for a connection.
+
+    This lightweight class holds the logical name of a database that clients
+    or connection factories can use to select which database to connect to.
+    It does not perform any connection logic or validation itself.
+
+    Attributes:
+        database_name (str): The name or identifier of the database (e.g. "mydb").
+            This should be set to the value expected by the underlying database
+            driver or connection string. The class does not enforce any format
+            or perform validation on this value.
+
+    Example:
+        >>> db = DatabaseConnect("production_db")
+        >>> db.database_name
+        'production_db'
+    """
+
     database_name: str
 
 
 @dataclass(frozen=True)
 class SchemaUsage:
+    """Representation of how a schema is used.
+
+    This class describes a single usage of a schema by name and whether that
+    usage is direct (explicit) or indirect (inherited/implicit). It is intended
+    to be a lightweight data holder for components that need to track schema
+    references.
+
+    Attributes:
+        schema_name (str): The name or identifier of the schema being referenced.
+        direct (bool): Whether the usage is a direct (explicit) reference.
+            Defaults to False for indirect or inferred usage.
+
+    Example:
+        >>> SchemaUsage(schema_name="user_profile", direct=True)
+    """
+
     schema_name: str
     direct: bool = False
 
 
 @dataclass(frozen=True)
 class SchemaCreate:
+    """Representation of a schema to be created.
+
+    This lightweight dataclass describes a request to create a schema and whether
+    that request is direct (explicit) or indirect (inferred). It is intended as
+    a simple data holder used by sync_roles to determine which schemas should be
+    created for a role.
+
+    Attributes:
+        schema_name (str): The name of the schema to create.
+        direct (bool): Avoid using intermediate roles and grant the permission
+            directly to the role. Defaults to False for indirect/inferred creation.
+    """
+
     schema_name: str
     direct: bool = False
 
 
 @dataclass(frozen=True)
 class SchemaOwnership:
+    """Representation of ownership of a schema.
+
+    Attributes:
+        schema_name (str): The name of the schema that is owned.
+    """
+
     schema_name: str
 
 
 @dataclass(frozen=True)
 class TableSelect:
+    """Representation of a table selection within a schema.
+
+    This dataclass describes a table (or a set of tables matched by a regular
+    expression) that should be considered for granting privileges. It is a
+    lightweight data holder used by sync_roles() to represent either a single
+    table name or a pattern matching multiple tables.
+
+    Attributes:
+        schema_name (str): Name of the schema containing the table(s).
+        table_name (str | re.Pattern): Either an exact table name or a compiled
+            regular expression to match multiple table names.
+        direct (bool): Avoid using intermediate roles and grant the permission
+            directly to the role. Defaults to False for indirect/inferred creation.
+    """
+
     schema_name: str
-    table_name: Union[str, re.Pattern]
+    table_name: str | re.Pattern
     direct: bool = False
 
 
 @dataclass(frozen=True)
 class Login:
-    valid_until: datetime = None
-    password: str = None
+    """Representation of login credentials and their validity for a role.
+
+    Attributes:
+        valid_until (datetime | None): The UTC expiration time of the role's
+            login, or None for no expiration.
+        password (str | None): The password to set for the role, or None to
+            leave the password unchanged or unset.
+    """
+
+    valid_until: datetime | None = None
+    password: str | None = None
 
 
 @dataclass(frozen=True)
 class RoleMembership:
+    """Representation of a role membership.
+
+    Attributes:
+        role_name (str): The name of the role that the membership refers to.
+    """
+
     role_name: str
 
 
@@ -115,10 +225,53 @@ def _transaction(conn):
 
 
 def _lock(execute_sql, lock_key, sql):
-    execute_sql(sql.SQL("SELECT pg_advisory_xact_lock({lock_key})").format(lock_key=sql.Literal(lock_key)))
+    execute_sql(sql.SQL('SELECT pg_advisory_xact_lock({lock_key})').format(lock_key=sql.Literal(lock_key)))
 
 
 def sync_roles(conn, role_name, grants=(), preserve_existing_grants_in_schemas=(), lock_key=1):
+    """Synchronize a database role's existence, memberships, logins, ownerships and ACLs.
+
+    This function inspects the current state of the specified role in the connected
+    database and applies changes so that the role matches the requested set of grants.
+    It may create helper ACL roles, create schemas, grant/revoke memberships, alter
+    ownerships, grant/revoke permissions on tables and schemas, and enable/disable login
+    according to the provided grant objects.
+
+    Parameters
+    ----------
+    conn : SQLAlchemy Connection
+        A SQLAlchemy connection with an engine of dialect `postgresql+psycopg` or
+        `postgresql+psycopg2`. For SQLAlchemy < 2 `future=True` must be passed
+        to its create_engine function.
+    role_name : str
+        The name of the role to synchronize.
+    grants : tuple of grants
+        A tuple of grants of all permissions that the role specified by the `role_name`
+        should have. Anything not in this list will be automatically revoked.
+    preserve_existing_grants_in_schemas : tuple of str
+        A tuple of schema names. For each schema name `sync_roles` will leave any
+        existing privileges granted on anything in the schema to `role_name` intact.
+        This is useful in situations when the contents of the schemas are managed
+        separately, outside of calls to `sync_roles`.
+
+       A schema name being listed in `preserve_existing_grants_in_schemas` does
+       not affect management of permissions on the the schema itself. In order
+       for `role_name` to have privileges on these, they will have to be passed
+       in via the `grants` parameter.
+    lock_key : int
+        The key for the advisory lock taken before changes are made. (defaults to 1).
+
+    Returns:
+    -------
+    None
+
+    Raises:
+    ------
+    ValueError
+        If invalid input is provided (for example, more than one Login object in grants).
+    RuntimeError
+        If an available name for a helper ACL role cannot be found when creating helper roles.
+    """
     execute_sql = partial(_execute_sql, conn)
     transaction = partial(_transaction, conn)
     lock = partial(_lock, execute_sql, lock_key)
@@ -128,31 +281,40 @@ def sync_roles(conn, role_name, grants=(), preserve_existing_grants_in_schemas=(
         # Expected to be called in a transaction context as above, so if an exception is thrown,
         # it will roll back. The REVOKE is _not_ in a finally: block because if there was an
         # this will then cause another error
-        logger.info("Temporarily granting roles %s to CURRENT_USER", role_names)
+        logger.info('Temporarily granting roles %s to CURRENT_USER', role_names)
         if role_names:
-            execute_sql(sql.SQL('GRANT {role_names} TO CURRENT_USER').format(
-                role_names=sql.SQL(',').join(sql.Identifier(role_name) for role_name, in role_names),
-            ))
+            execute_sql(
+                sql.SQL('GRANT {role_names} TO CURRENT_USER').format(
+                    role_names=sql.SQL(',').join(sql.Identifier(role_name) for (role_name,) in role_names),
+                ),
+            )
         yield
-        logger.info("Revoking roles %s from CURRENT_USER", role_names)
+        logger.info('Revoking roles %s from CURRENT_USER', role_names)
         if role_names:
-            execute_sql(sql.SQL('REVOKE {role_names} FROM CURRENT_USER').format(
-                role_names=sql.SQL(',').join(sql.Identifier(role_name) for role_name, in role_names)
-            ))
+            execute_sql(
+                sql.SQL('REVOKE {role_names} FROM CURRENT_USER').format(
+                    role_names=sql.SQL(',').join(sql.Identifier(role_name) for (role_name,) in role_names),
+                ),
+            )
 
     def get_database_oid():
-        return execute_sql(sql.SQL('''
+        return execute_sql(
+            sql.SQL("""
             SELECT oid FROM pg_database WHERE datname = current_database()
-        ''')).fetchall()[0][0]
+        """),
+        ).fetchall()[0][0]
 
     def get_role_exists(role_name):
-        return execute_sql(sql.SQL("SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = {role_name})").format(
-            role_name=sql.Literal(role_name),
-        )).fetchall()[0][0]
+        return execute_sql(
+            sql.SQL('SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = {role_name})').format(
+                role_name=sql.Literal(role_name),
+            ),
+        ).fetchall()[0][0]
 
     def tables_in_schema_matching_regex(schema_name, table_name_regex):
         # Inspired by https://dba.stackexchange.com/a/345153/37229 to avoid sequential scan on pg_class
-        table_names = execute_sql(sql.SQL('''
+        table_names = execute_sql(
+            sql.SQL("""
             SELECT relname
             FROM pg_depend
             INNER JOIN pg_class ON pg_class.oid = pg_depend.objid
@@ -161,81 +323,94 @@ def sync_roles(conn, role_name, grants=(), preserve_existing_grants_in_schemas=(
               AND pg_depend.classid = 'pg_class'::regclass
               AND pg_class.relkind = ANY(ARRAY['p', 'r', 'v', 'm'])
             ORDER BY relname
-        ''').format(
-            schema_name=sql.Literal(schema_name),
-        )).fetchall()
-        return tuple(table_name for table_name, in table_names if table_name_regex.match(table_name))
+        """).format(
+                schema_name=sql.Literal(schema_name),
+            ),
+        ).fetchall()
+        return tuple(table_name for (table_name,) in table_names if table_name_regex.match(table_name))
 
     def get_existing(table_name, column_name, values_to_search_for):
         if not values_to_search_for:
             return []
-        return execute_sql(sql.SQL('SELECT {column_name} FROM {table_name} WHERE {column_name} IN ({values_to_search_for})').format(
-            table_name=sql.Identifier(table_name),
-            column_name=sql.Identifier(column_name),
-            values_to_search_for=sql.SQL(',').join(
-                sql.Literal(value) for value in values_to_search_for
-            )
-        )).fetchall()
+        return execute_sql(
+            sql.SQL('SELECT {column_name} FROM {table_name} WHERE {column_name} IN ({values_to_search_for})').format(
+                table_name=sql.Identifier(table_name),
+                column_name=sql.Identifier(column_name),
+                values_to_search_for=sql.SQL(',').join(sql.Literal(value) for value in values_to_search_for),
+            ),
+        ).fetchall()
 
     def get_existing_in_schema(table_name, namespace_column_name, row_name_column_name, values_to_search_for):
         if not values_to_search_for:
             return []
-        return execute_sql(sql.SQL('''
+        return execute_sql(
+            sql.SQL("""
             SELECT nspname, {row_name_column_name}
             FROM {table_name} c
             INNER JOIN pg_namespace n ON n.oid = c.{namespace_column_name}
             WHERE (nspname, {row_name_column_name}) IN ({values_to_search_for})
-        ''').format(
-            table_name=sql.Identifier(table_name),
-            namespace_column_name=sql.Identifier(namespace_column_name),
-            row_name_column_name=sql.Identifier(row_name_column_name),
-            values_to_search_for=sql.SQL(',').join(
-                sql.SQL('({},{})').format(sql.Literal(schema_name), sql.Literal(row_name))
-                for (schema_name, row_name) in values_to_search_for
-            )
-        )).fetchall()
+        """).format(
+                table_name=sql.Identifier(table_name),
+                namespace_column_name=sql.Identifier(namespace_column_name),
+                row_name_column_name=sql.Identifier(row_name_column_name),
+                values_to_search_for=sql.SQL(',').join(
+                    sql.SQL('({},{})').format(sql.Literal(schema_name), sql.Literal(row_name))
+                    for (schema_name, row_name) in values_to_search_for
+                ),
+            ),
+        ).fetchall()
 
     def get_owners(table_name, owner_column_name, name_column_name, values_to_search_for):
         if not values_to_search_for:
             return []
-        return execute_sql(sql.SQL('''
+        return execute_sql(
+            sql.SQL("""
             SELECT DISTINCT rolname
             FROM {table_name}
             INNER JOIN pg_roles r ON r.oid = {owner_column_name}
             WHERE {name_column_name} IN ({values_to_search_for})
-        ''').format(
-            table_name=sql.Identifier(table_name),
-            owner_column_name=sql.Identifier(owner_column_name),
-            name_column_name=sql.Identifier(name_column_name),
-            values_to_search_for=sql.SQL(',').join(
-                sql.Literal(value) for value in values_to_search_for
-            )
-        )).fetchall()
+        """).format(
+                table_name=sql.Identifier(table_name),
+                owner_column_name=sql.Identifier(owner_column_name),
+                name_column_name=sql.Identifier(name_column_name),
+                values_to_search_for=sql.SQL(',').join(sql.Literal(value) for value in values_to_search_for),
+            ),
+        ).fetchall()
 
-    def get_owners_in_schema(table_name, owner_column_name, namespace_column_name, row_name_column_name, values_to_search_for):
+    def get_owners_in_schema(
+        table_name,
+        owner_column_name,
+        namespace_column_name,
+        row_name_column_name,
+        values_to_search_for,
+    ):
         if not values_to_search_for:
             return []
-        return execute_sql(sql.SQL('''
+        return execute_sql(
+            sql.SQL("""
             SELECT DISTINCT rolname
             FROM {table_name} c
             INNER JOIN pg_namespace n ON n.oid = c.{namespace_column_name}
             INNER JOIN pg_roles r ON r.oid = {owner_column_name}
             WHERE (nspname, {row_name_column_name}) IN ({values_to_search_for})
-        ''').format(
-            table_name=sql.Identifier(table_name),
-            owner_column_name=sql.Identifier(owner_column_name),
-            namespace_column_name=sql.Identifier(namespace_column_name),
-            row_name_column_name=sql.Identifier(row_name_column_name),
-            values_to_search_for=sql.SQL(',').join(
-                sql.SQL('({},{})').format(sql.Literal(schema_name), sql.Literal(row_name))
-                for (schema_name, row_name) in values_to_search_for
-            )
-        )).fetchall()
+        """).format(
+                table_name=sql.Identifier(table_name),
+                owner_column_name=sql.Identifier(owner_column_name),
+                namespace_column_name=sql.Identifier(namespace_column_name),
+                row_name_column_name=sql.Identifier(row_name_column_name),
+                values_to_search_for=sql.SQL(',').join(
+                    sql.SQL('({},{})').format(sql.Literal(schema_name), sql.Literal(row_name))
+                    for (schema_name, row_name) in values_to_search_for
+                ),
+            ),
+        ).fetchall()
 
     def get_acl_roles(privilege_type, table_name, row_name_column_name, acl_column_name, role_pattern, row_names):
-        row_name_role_names = \
-            [] if not row_names else \
-            execute_sql(sql.SQL("""
+        row_name_role_names = (
+            []
+            if not row_names
+            else execute_sql(
+                sql.SQL("""
                 SELECT row_names.name, grantee::regrole
                 FROM (
                     VALUES {row_names}
@@ -247,26 +422,34 @@ def sync_roles(conn, role_name, grants=(), preserve_existing_grants_in_schemas=(
                     AND privilege_type = {privilege_type}
                 ) grantees ON grantees.{row_name_column_name} = row_names.name
             """).format(
-                privilege_type=sql.Literal(privilege_type),
-                table_name=sql.Identifier(table_name),
-                row_name_column_name=sql.Identifier(row_name_column_name),
-                acl_column_name=sql.Identifier(acl_column_name),
-                role_pattern=sql.Literal(role_pattern),
-                row_names=sql.SQL(',').join(
-                    sql.SQL('({})').format(sql.Literal(row_name))
-                    for row_name in row_names
-                )
-            )).fetchall()
+                    privilege_type=sql.Literal(privilege_type),
+                    table_name=sql.Identifier(table_name),
+                    row_name_column_name=sql.Identifier(row_name_column_name),
+                    acl_column_name=sql.Identifier(acl_column_name),
+                    role_pattern=sql.Literal(role_pattern),
+                    row_names=sql.SQL(',').join(
+                        sql.SQL('({})').format(sql.Literal(row_name)) for row_name in row_names
+                    ),
+                ),
+            ).fetchall()
+        )
 
-        return {
-            row_name: role_name
-            for row_name, role_name in row_name_role_names
-        }
+        return dict(row_name_role_names)
 
-    def get_acl_roles_in_schema(privilege_type, table_name, row_name_column_name, acl_column_name, namespace_oid_column_name, role_pattern, row_names):
-        row_name_role_names = \
-            [] if not row_names else \
-            execute_sql(sql.SQL("""
+    def get_acl_roles_in_schema(
+        privilege_type,
+        table_name,
+        row_name_column_name,
+        acl_column_name,
+        namespace_oid_column_name,
+        role_pattern,
+        row_names,
+    ):
+        row_name_role_names = (
+            []
+            if not row_names
+            else execute_sql(
+                sql.SQL("""
                 SELECT all_names.schema_name, all_names.row_name, grantee::regrole
                 FROM (
                     VALUES {row_names}
@@ -280,35 +463,43 @@ def sync_roles(conn, role_name, grants=(), preserve_existing_grants_in_schemas=(
                     AND privilege_type = {privilege_type}
                 ) grantees ON grantees.schema_name = all_names.schema_name AND grantees.row_name = all_names.row_name
             """).format(
-                privilege_type=sql.Literal(privilege_type),
-                table_name=sql.Identifier(table_name),
-                row_name_column_name=sql.Identifier(row_name_column_name),
-                acl_column_name=sql.Identifier(acl_column_name),
-                namespace_oid_column_name=sql.Identifier(namespace_oid_column_name),
-                role_pattern=sql.Literal(role_pattern),
-                row_names=sql.SQL(',').join(
-                    sql.SQL('({},{})').format(
-                        sql.Literal(schema_name),
-                        sql.Literal(row_name),
-                    )
-                    for (schema_name, row_name) in row_names
-                )
-            )).fetchall()
+                    privilege_type=sql.Literal(privilege_type),
+                    table_name=sql.Identifier(table_name),
+                    row_name_column_name=sql.Identifier(row_name_column_name),
+                    acl_column_name=sql.Identifier(acl_column_name),
+                    namespace_oid_column_name=sql.Identifier(namespace_oid_column_name),
+                    role_pattern=sql.Literal(role_pattern),
+                    row_names=sql.SQL(',').join(
+                        sql.SQL('({},{})').format(
+                            sql.Literal(schema_name),
+                            sql.Literal(row_name),
+                        )
+                        for (schema_name, row_name) in row_names
+                    ),
+                ),
+            ).fetchall()
+        )
 
-        return {
-            (schema_name, row_name): role_name
-            for schema_name, row_name, role_name in row_name_role_names
-        }
+        return {(schema_name, row_name): role_name for schema_name, row_name, role_name in row_name_role_names}
 
     def get_existing_permissions(role_name, preserve_existing_grants_in_schemas):
         preserve_existing_grants_in_schemas_set = set(preserve_existing_grants_in_schemas)
-        results = tuple(row._mapping for row in execute_sql(sql.SQL(_EXISTING_PERMISSIONS_SQL).format(
-            role_name=sql.Literal(role_name)
-        )).fetchall())
-        return tuple(row for row in results if row['on'] not in _IN_SCHEMA or row['name_1'] not in preserve_existing_grants_in_schemas_set)
+        results = tuple(
+            row._mapping
+            for row in execute_sql(
+                sql.SQL(_EXISTING_PERMISSIONS_SQL).format(
+                    role_name=sql.Literal(role_name),
+                ),
+            ).fetchall()
+        )
+        return tuple(
+            row
+            for row in results
+            if row['on'] not in _IN_SCHEMA or row['name_1'] not in preserve_existing_grants_in_schemas_set
+        )
 
     def get_available_acl_role(base):
-        for _ in range(0, 10):
+        for _ in range(10):
             database_connect_role = base + uuid4().hex[:8]
             if not get_role_exists(database_connect_role):
                 return database_connect_role
@@ -316,84 +507,104 @@ def sync_roles(conn, role_name, grants=(), preserve_existing_grants_in_schemas=(
         raise RuntimeError('Unable to find available role name')
 
     def get_acl_rows(permissions, matching_on):
-        return tuple(row for row in permissions if row['on'] in matching_on and row['privilege_type'] in _KNOWN_PRIVILEGES)
+        return tuple(
+            row for row in permissions if row['on'] in matching_on and row['privilege_type'] in _KNOWN_PRIVILEGES
+        )
 
     def create_role(role_name):
-        logger.info("Creating ROLE %s", role_name)
+        logger.info('Creating ROLE %s', role_name)
         execute_sql(sql.SQL('CREATE ROLE {role_name};').format(role_name=sql.Identifier(role_name)))
 
     def create_schema(schema_name):
-        logger.info("Creating SCHEMA %s", schema_name)
+        logger.info('Creating SCHEMA %s', schema_name)
         execute_sql(sql.SQL('CREATE SCHEMA {schema_name};').format(schema_name=sql.Identifier(schema_name)))
 
     def grant(grant_type, object_type, object_name, role_name):
-        logger.info("Granting %s on %s %s to role %s", grant_type, object_type, object_name, role_name)
-        execute_sql(sql.SQL('GRANT {grant_type} ON {object_type} {object_name} TO {role_name}').format(
-            grant_type=grant_type,
-            object_type=object_type,
-            object_name=sql.Identifier(*object_name),
-            role_name=sql.Identifier(role_name),
-        ))
+        logger.info('Granting %s on %s %s to role %s', grant_type, object_type, object_name, role_name)
+        execute_sql(
+            sql.SQL('GRANT {grant_type} ON {object_type} {object_name} TO {role_name}').format(
+                grant_type=grant_type,
+                object_type=object_type,
+                object_name=sql.Identifier(*object_name),
+                role_name=sql.Identifier(role_name),
+            ),
+        )
 
     def revoke(grant_type, object_type, object_name, role_name):
-        logger.info("Revoking %s on %s %s to role %s", grant_type, object_type, object_name, role_name)
-        execute_sql(sql.SQL('REVOKE {grant_type} ON {object_type} {object_name} FROM {role_name}').format(
-            grant_type=grant_type,
-            object_type=object_type,
-            object_name=sql.Identifier(*object_name),
-            role_name=sql.Identifier(role_name),
-        ))
+        logger.info('Revoking %s on %s %s to role %s', grant_type, object_type, object_name, role_name)
+        execute_sql(
+            sql.SQL('REVOKE {grant_type} ON {object_type} {object_name} FROM {role_name}').format(
+                grant_type=grant_type,
+                object_type=object_type,
+                object_name=sql.Identifier(*object_name),
+                role_name=sql.Identifier(role_name),
+            ),
+        )
 
     def grant_ownership(object_type, role_name, object_name):
-        logger.info("Granting schema ownership on %s %s to role %s", object_type, object_name, role_name)
-        execute_sql(sql.SQL('ALTER {object_type} {object_name} OWNER TO {role_name}').format(
-            object_type=object_type,
-            role_name=sql.Identifier(role_name),
-            object_name=sql.Identifier(object_name),
-        ))
+        logger.info('Granting schema ownership on %s %s to role %s', object_type, object_name, role_name)
+        execute_sql(
+            sql.SQL('ALTER {object_type} {object_name} OWNER TO {role_name}').format(
+                object_type=object_type,
+                role_name=sql.Identifier(role_name),
+                object_name=sql.Identifier(object_name),
+            ),
+        )
 
     def revoke_ownership(object_type, role_name, object_name):
-        logger.info("Revoking schema ownership of %s %s from role %s", object_type, object_name, role_name)
-        execute_sql(sql.SQL('ALTER {object_type} {object_name} OWNER TO CURRENT_USER').format(
-            object_type=object_type,
-            object_name=sql.Identifier(object_name),
-        ))
+        logger.info('Revoking schema ownership of %s %s from role %s', object_type, object_name, role_name)
+        execute_sql(
+            sql.SQL('ALTER {object_type} {object_name} OWNER TO CURRENT_USER').format(
+                object_type=object_type,
+                object_name=sql.Identifier(object_name),
+            ),
+        )
 
     def grant_login(role_name, login):
-        logger.info("Granting LOGIN on login %s to role %s", login, role_name)
-        execute_sql(sql.SQL('ALTER ROLE {role_name} WITH LOGIN {password} VALID UNTIL {valid_until}').format(
-            role_name=sql.Identifier(role_name),
-            password=sql.SQL('PASSWORD {password}').format(
-                password=sql.Literal(login.password)
-            ) if login.password is not None else sql.SQL(''),
-            valid_until=sql.Literal(login.valid_until.isoformat() if login.valid_until is not None else 'infinity'),
-        ))
+        logger.info('Granting LOGIN on login %s to role %s', login, role_name)
+        execute_sql(
+            sql.SQL('ALTER ROLE {role_name} WITH LOGIN {password} VALID UNTIL {valid_until}').format(
+                role_name=sql.Identifier(role_name),
+                password=sql.SQL('PASSWORD {password}').format(
+                    password=sql.Literal(login.password),
+                )
+                if login.password is not None
+                else sql.SQL(''),
+                valid_until=sql.Literal(login.valid_until.isoformat() if login.valid_until is not None else 'infinity'),
+            ),
+        )
 
     def revoke_login(role_name):
-        logger.info("Revoking LOGIN from role %s", role_name)
-        execute_sql(sql.SQL('ALTER ROLE {role_name} WITH NOLOGIN PASSWORD NULL').format(
-            role_name=sql.Identifier(role_name),
-        ))
+        logger.info('Revoking LOGIN from role %s', role_name)
+        execute_sql(
+            sql.SQL('ALTER ROLE {role_name} WITH NOLOGIN PASSWORD NULL').format(
+                role_name=sql.Identifier(role_name),
+            ),
+        )
 
     def grant_memberships(memberships, role_name):
         if not memberships:
-            logger.info("No memberships granted to %s", role_name)
+            logger.info('No memberships granted to %s', role_name)
             return
-        logger.info("Granting memberships %s to role %s", memberships, role_name)
-        execute_sql(sql.SQL('GRANT {memberships} TO {role_name}').format(
-            memberships=sql.SQL(',').join(sql.Identifier(membership) for membership in memberships),
-            role_name=sql.Identifier(role_name),
-        ))
+        logger.info('Granting memberships %s to role %s', memberships, role_name)
+        execute_sql(
+            sql.SQL('GRANT {memberships} TO {role_name}').format(
+                memberships=sql.SQL(',').join(sql.Identifier(membership) for membership in memberships),
+                role_name=sql.Identifier(role_name),
+            ),
+        )
 
     def revoke_memberships(memberships, role_name):
         if not memberships:
-            logger.info("No memberships revoked from %s", role_name)
+            logger.info('No memberships revoked from %s', role_name)
             return
-        logger.info("Revoking memberships %s from role %s", memberships, role_name)
-        execute_sql(sql.SQL('REVOKE {memberships} FROM {role_name}').format(
-            memberships=sql.SQL(',').join(sql.Identifier(membership) for membership in memberships),
-            role_name=sql.Identifier(role_name),
-        ))
+        logger.info('Revoking memberships %s from role %s', memberships, role_name)
+        execute_sql(
+            sql.SQL('REVOKE {memberships} FROM {role_name}').format(
+                memberships=sql.SQL(',').join(sql.Identifier(membership) for membership in memberships),
+                role_name=sql.Identifier(role_name),
+            ),
+        )
 
     def keys_with_none_value(d):
         return tuple(key for key, value in d.items() if value is None)
@@ -425,7 +636,7 @@ def sync_roles(conn, role_name, grants=(), preserve_existing_grants_in_schemas=(
         EXECUTE: sql.SQL('EXECUTE'),
         USAGE: sql.SQL('USAGE'),
         SET: sql.SQL('SET'),
-        ALTER_SYSTEM : sql.SQL('ALTER SYSTEM'),
+        ALTER_SYSTEM: sql.SQL('ALTER SYSTEM'),
     }
 
     sql_object_types = {
@@ -444,26 +655,39 @@ def sync_roles(conn, role_name, grants=(), preserve_existing_grants_in_schemas=(
         # Find existing databases and schemas
         database_connects = tuple(grant for grant in grants if isinstance(grant, DatabaseConnect))
         all_database_names = tuple(grant.database_name for grant in database_connects)
-        all_schema_names = tuple(grant.schema_name for grant in grants if isinstance(grant, (SchemaUsage, SchemaCreate, SchemaOwnership, TableSelect)))
+        all_schema_names = tuple(
+            grant.schema_name
+            for grant in grants
+            if isinstance(grant, (SchemaUsage, SchemaCreate, SchemaOwnership, TableSelect))
+        )
         databases_that_exist = set(get_existing('pg_database', 'datname', all_database_names))
         schemas_that_exist = set(get_existing('pg_namespace', 'nspname', all_schema_names))
 
         # Find table selects: in schemas that exist expand all those specified by regex
-        table_selects = tuple(grant for grant in grants if isinstance(grant, TableSelect) and (grant.schema_name,) in schemas_that_exist)
-        table_selects_exact_name = tuple(grant for grant in table_selects if not isinstance(grant.table_name, re.Pattern))
+        table_selects = tuple(
+            grant for grant in grants if isinstance(grant, TableSelect) and (grant.schema_name,) in schemas_that_exist
+        )
+        table_selects_exact_name = tuple(
+            grant for grant in table_selects if not isinstance(grant.table_name, re.Pattern)
+        )
         table_selects_regex_name = tuple(grant for grant in table_selects if isinstance(grant.table_name, re.Pattern))
-        table_selects = without_duplicates_preserve_order(table_selects_exact_name + tuple(
-            TableSelect(grant.schema_name, table_name, direct=grant.direct)
-            for grant in table_selects_regex_name
-            for table_name in tables_in_schema_matching_regex(grant.schema_name, grant.table_name)
-        ))
+        table_selects = without_duplicates_preserve_order(
+            table_selects_exact_name
+            + tuple(
+                TableSelect(grant.schema_name, table_name, direct=grant.direct)
+                for grant in table_selects_regex_name
+                for table_name in tables_in_schema_matching_regex(grant.schema_name, grant.table_name)
+            ),
+        )
         all_table_names = tuple((grant.schema_name, grant.table_name) for grant in table_selects)
         tables_that_exist = set(get_existing_in_schema('pg_class', 'relnamespace', 'relname', all_table_names))
 
         # Split grants by their type
         schema_usages_indirect = tuple(grant for grant in grants if isinstance(grant, SchemaUsage) and not grant.direct)
         schema_usages_direct = tuple(grant for grant in grants if isinstance(grant, SchemaUsage) and grant.direct)
-        schema_creates_indirect = tuple(grant for grant in grants if isinstance(grant, SchemaCreate) and not grant.direct)
+        schema_creates_indirect = tuple(
+            grant for grant in grants if isinstance(grant, SchemaCreate) and not grant.direct
+        )
         schema_creates_direct = tuple(grant for grant in grants if isinstance(grant, SchemaCreate) and grant.direct)
         schema_ownerships = tuple(grant for grant in grants if isinstance(grant, SchemaOwnership))
         table_selects_indirect = tuple(grant for grant in table_selects if not grant.direct)
@@ -475,92 +699,198 @@ def sync_roles(conn, role_name, grants=(), preserve_existing_grants_in_schemas=(
 
         # Filter out ACLs grants for databases, schemas and tables that don't exist
         # (But including ACLs on schemas that we're going to own and so will create if necessary)
-        database_connects = tuple(database_connect for database_connect in database_connects if (database_connect.database_name,) in databases_that_exist)
-        schema_ownerships_names = set(schema_ownership.schema_name for schema_ownership in schema_ownerships)
-        schema_usages_indirect = tuple(schema_usage for schema_usage in schema_usages_indirect if (schema_usage.schema_name,) in schemas_that_exist or schema_usage.schema_name in schema_ownerships_names)
-        schema_usages_direct = tuple(schema_usage for schema_usage in schema_usages_direct if (schema_usage.schema_name,) in schemas_that_exist or schema_usage.schema_name in schema_ownerships_names)
-        schema_creates_indirect = tuple(schema_create for schema_create in schema_creates_indirect if (schema_create.schema_name,) in schemas_that_exist or schema_create.schema_name in schema_ownerships_names)
-        schema_creates_direct = tuple(schema_create for schema_create in schema_creates_direct if (schema_create.schema_name,) in schemas_that_exist or schema_create.schema_name in schema_ownerships_names)
-        table_selects_indirect = tuple(table_select for table_select in table_selects_indirect if (table_select.schema_name, table_select.table_name) in tables_that_exist)
-        table_selects_direct = tuple(table_select for table_select in table_selects_direct if (table_select.schema_name, table_select.table_name) in tables_that_exist)
+        database_connects = tuple(
+            database_connect
+            for database_connect in database_connects
+            if (database_connect.database_name,) in databases_that_exist
+        )
+        schema_ownerships_names = {schema_ownership.schema_name for schema_ownership in schema_ownerships}
+        schema_usages_indirect = tuple(
+            schema_usage
+            for schema_usage in schema_usages_indirect
+            if (schema_usage.schema_name,) in schemas_that_exist or schema_usage.schema_name in schema_ownerships_names
+        )
+        schema_usages_direct = tuple(
+            schema_usage
+            for schema_usage in schema_usages_direct
+            if (schema_usage.schema_name,) in schemas_that_exist or schema_usage.schema_name in schema_ownerships_names
+        )
+        schema_creates_indirect = tuple(
+            schema_create
+            for schema_create in schema_creates_indirect
+            if (schema_create.schema_name,) in schemas_that_exist
+            or schema_create.schema_name in schema_ownerships_names
+        )
+        schema_creates_direct = tuple(
+            schema_create
+            for schema_create in schema_creates_direct
+            if (schema_create.schema_name,) in schemas_that_exist
+            or schema_create.schema_name in schema_ownerships_names
+        )
+        table_selects_indirect = tuple(
+            table_select
+            for table_select in table_selects_indirect
+            if (table_select.schema_name, table_select.table_name) in tables_that_exist
+        )
+        table_selects_direct = tuple(
+            table_select
+            for table_select in table_selects_direct
+            if (table_select.schema_name, table_select.table_name) in tables_that_exist
+        )
         all_database_connect_names = tuple(grant.database_name for grant in database_connects)
         all_schema_usage_indirect_names = tuple(grant.schema_name for grant in schema_usages_indirect)
         all_schema_create_indirect_names = tuple(grant.schema_name for grant in schema_creates_indirect)
-        all_table_select_indirect_names = tuple((grant.schema_name, grant.table_name) for grant in table_selects_indirect)
+        all_table_select_indirect_names = tuple(
+            (grant.schema_name, grant.table_name) for grant in table_selects_indirect
+        )
 
         # Find if we need to make the role
         role_to_create = not get_role_exists(role_name)
 
         # Get all existing permissions
-        existing_permissions = get_existing_permissions(role_name, preserve_existing_grants_in_schemas) if not role_to_create else []
+        existing_permissions = (
+            get_existing_permissions(role_name, preserve_existing_grants_in_schemas) if not role_to_create else []
+        )
 
         # Real ACL permissions on tables
-        acl_table_permissions_tuples = tuple((row['privilege_type'], row['name_1'], row['name_2']) for row in get_acl_rows(existing_permissions, _TABLE_LIKE))
+        acl_table_permissions_tuples = tuple(
+            (row['privilege_type'], row['name_1'], row['name_2'])
+            for row in get_acl_rows(existing_permissions, _TABLE_LIKE)
+        )
         acl_table_permissions_set = set(acl_table_permissions_tuples)
-        table_selects_direct_tuples = tuple(('SELECT', table_select.schema_name, table_select.table_name) for table_select in table_selects_direct)
+        table_selects_direct_tuples = tuple(
+            ('SELECT', table_select.schema_name, table_select.table_name) for table_select in table_selects_direct
+        )
         table_selects_direct_set = set(table_selects_direct_tuples)
-        acl_table_permissions_to_revoke = tuple(row for row in acl_table_permissions_tuples if row not in table_selects_direct_set)
-        acl_table_permissions_to_grant = tuple(row for row in table_selects_direct_tuples if row not in acl_table_permissions_set)
+        acl_table_permissions_to_revoke = tuple(
+            row for row in acl_table_permissions_tuples if row not in table_selects_direct_set
+        )
+        acl_table_permissions_to_grant = tuple(
+            row for row in table_selects_direct_tuples if row not in acl_table_permissions_set
+        )
 
         # Real ACL permissions on schemas
-        acl_schema_permissions_tuples = tuple((row['privilege_type'], row['name_1']) for row in get_acl_rows(existing_permissions, _SCHEMA))
+        acl_schema_permissions_tuples = tuple(
+            (row['privilege_type'], row['name_1']) for row in get_acl_rows(existing_permissions, _SCHEMA)
+        )
         acl_schema_permissions_set = set(acl_schema_permissions_tuples)
-        schema_direct_tuples = \
-            tuple(('USAGE', schema_usage.schema_name) for schema_usage in schema_usages_direct) + \
-            tuple(('CREATE', schema_usage.schema_name) for schema_usage in schema_creates_direct)
+        schema_direct_tuples = tuple(
+            ('USAGE', schema_usage.schema_name) for schema_usage in schema_usages_direct
+        ) + tuple(('CREATE', schema_usage.schema_name) for schema_usage in schema_creates_direct)
         schema_direct_set = set(schema_direct_tuples)
-        acl_schema_permissions_to_revoke = tuple(row for row in acl_schema_permissions_tuples if row not in schema_direct_tuples)
-        acl_schema_permissions_to_grant = tuple(row for row in schema_direct_tuples if row not in acl_schema_permissions_set)
+        acl_schema_permissions_to_revoke = tuple(
+            row for row in acl_schema_permissions_tuples if row not in schema_direct_tuples
+        )
+        acl_schema_permissions_to_grant = tuple(
+            row for row in schema_direct_tuples if row not in acl_schema_permissions_set
+        )
 
         # And the ACL-equivalent roles
         database_connect_roles = get_acl_roles(
-            'CONNECT', 'pg_database', 'datname', 'datacl', '\\_pgsr\\_global\\_database\\_connect\\_%',
-            all_database_connect_names)
+            'CONNECT',
+            'pg_database',
+            'datname',
+            'datacl',
+            '\\_pgsr\\_global\\_database\\_connect\\_%',
+            all_database_connect_names,
+        )
         database_connect_roles_to_create = keys_with_none_value(database_connect_roles)
 
         schema_usage_roles = get_acl_roles(
-            'USAGE', 'pg_namespace', 'nspname', 'nspacl', f'\\_pgsr\\_local\\_{db_oid}_\\schema\\_usage\\_%',
-            all_schema_usage_indirect_names)
+            'USAGE',
+            'pg_namespace',
+            'nspname',
+            'nspacl',
+            f'\\_pgsr\\_local\\_{db_oid}_\\schema\\_usage\\_%',
+            all_schema_usage_indirect_names,
+        )
         schema_usage_roles_to_create = keys_with_none_value(schema_usage_roles)
         schema_create_roles = get_acl_roles(
-            'CREATE', 'pg_namespace', 'nspname', 'nspacl', f'\\_pgsr\\_local\\_{db_oid}_\\schema\\_create\\_%',
-            all_schema_create_indirect_names)
+            'CREATE',
+            'pg_namespace',
+            'nspname',
+            'nspacl',
+            f'\\_pgsr\\_local\\_{db_oid}_\\schema\\_create\\_%',
+            all_schema_create_indirect_names,
+        )
         schema_create_roles_to_create = keys_with_none_value(schema_create_roles)
 
         table_select_roles = get_acl_roles_in_schema(
-            'SELECT', 'pg_class', 'relname', 'relacl', 'relnamespace', f'\\_pgsr\\_local\\_{db_oid}_\\table\\_select\\_%',
-            all_table_select_indirect_names)
+            'SELECT',
+            'pg_class',
+            'relname',
+            'relacl',
+            'relnamespace',
+            f'\\_pgsr\\_local\\_{db_oid}_\\table\\_select\\_%',
+            all_table_select_indirect_names,
+        )
         table_select_roles_to_create = keys_with_none_value(table_select_roles)
 
         # Ownerships to grant and revoke
-        schema_ownerships_that_exist = tuple(SchemaOwnership(perm['name_1']) for perm in existing_permissions if perm['on'] == 'schema' and perm['privilege_type'] == 'OWNER')
-        schema_ownerships_to_revoke = tuple(schema_ownership for schema_ownership in schema_ownerships_that_exist if schema_ownership not in schema_ownerships)
-        schema_ownerships_to_grant = tuple(schema_ownership for schema_ownership in schema_ownerships if schema_ownership not in schema_ownerships_that_exist)
+        schema_ownerships_that_exist = tuple(
+            SchemaOwnership(perm['name_1'])
+            for perm in existing_permissions
+            if perm['on'] == 'schema' and perm['privilege_type'] == 'OWNER'
+        )
+        schema_ownerships_to_revoke = tuple(
+            schema_ownership
+            for schema_ownership in schema_ownerships_that_exist
+            if schema_ownership not in schema_ownerships
+        )
+        schema_ownerships_to_grant = tuple(
+            schema_ownership
+            for schema_ownership in schema_ownerships
+            if schema_ownership not in schema_ownerships_that_exist
+        )
 
         # And any memberships of the database connect roles or explicitly requested role memberships
-        memberships = set(perm['name_1'] for perm in existing_permissions if perm['on'] == 'role' and perm['privilege_type'] == 'MEMBER')
-        database_connect_memberships_to_grant = tuple(role for role in database_connect_roles.values() if role not in memberships)
-        schema_usage_memberships_to_grant = tuple(role for role in schema_usage_roles.values() if role not in memberships)
-        schema_create_memberships_to_grant = tuple(role for role in schema_create_roles.values() if role not in memberships)
-        table_select_memberships_to_grant = tuple(role for role in table_select_roles.values() if role not in memberships)
-        role_memberships_to_grant = tuple(role_membership for role_membership in role_memberships if role_membership.role_name not in memberships)
+        memberships = {
+            perm['name_1']
+            for perm in existing_permissions
+            if perm['on'] == 'role' and perm['privilege_type'] == 'MEMBER'
+        }
+        database_connect_memberships_to_grant = tuple(
+            role for role in database_connect_roles.values() if role not in memberships
+        )
+        schema_usage_memberships_to_grant = tuple(
+            role for role in schema_usage_roles.values() if role not in memberships
+        )
+        schema_create_memberships_to_grant = tuple(
+            role for role in schema_create_roles.values() if role not in memberships
+        )
+        table_select_memberships_to_grant = tuple(
+            role for role in table_select_roles.values() if role not in memberships
+        )
+        role_memberships_to_grant = tuple(
+            role_membership for role_membership in role_memberships if role_membership.role_name not in memberships
+        )
 
         # And if the role can login / its login status is to be changed
-        login_row = next((perm for perm in existing_permissions if perm['on'] == 'cluster' and perm['privilege_type'] == 'LOGIN'), None)
+        login_row = next(
+            (perm for perm in existing_permissions if perm['on'] == 'cluster' and perm['privilege_type'] == 'LOGIN'),
+            None,
+        )
         can_login = login_row is not None
 
-        valid_until = datetime.strptime(login_row['name_1'], '%Y-%m-%dT%H:%M:%S.%f%z') if login_row is not None and login_row['name_1'] is not None else None
-        logins_to_grant = logins and (not can_login or valid_until != logins[0].valid_until or logins[0].password is not None)
+        valid_until = (
+            datetime.strptime(login_row['name_1'], '%Y-%m-%dT%H:%M:%S.%f%z')
+            if login_row is not None and login_row['name_1'] is not None
+            else None
+        )
+        logins_to_grant = logins and (
+            not can_login or valid_until != logins[0].valid_until or logins[0].password is not None
+        )
         logins_to_revoke = not logins and can_login
 
         # And any memberships to revoke
-        memberships_to_revoke = memberships \
-            - set(role_membership.role_name for role_membership in role_memberships) \
-            - set(role for role in database_connect_roles.values()) \
-            - set(role for role in table_select_roles.values()) \
-            - set(role for role in schema_usage_roles.values()) \
-            - set(role for role in schema_create_roles.values()) \
-
+        memberships_to_revoke = (
+            memberships
+            - {role_membership.role_name for role_membership in role_memberships}
+            - set(database_connect_roles.values())
+            - set(table_select_roles.values())
+            - set(schema_usage_roles.values())
+            - set(schema_create_roles.values())
+        )
         # If we don't need to do anything, we're done.
         if (
             not role_to_create
@@ -600,64 +930,119 @@ def sync_roles(conn, role_name, grants=(), preserve_existing_grants_in_schemas=(
         existing_permissions = get_existing_permissions(role_name, preserve_existing_grants_in_schemas)
 
         # Real ACL permissions on tables
-        acl_table_permissions_tuples = tuple((row['privilege_type'], row['name_1'], row['name_2']) for row in get_acl_rows(existing_permissions, _TABLE_LIKE))
+        acl_table_permissions_tuples = tuple(
+            (row['privilege_type'], row['name_1'], row['name_2'])
+            for row in get_acl_rows(existing_permissions, _TABLE_LIKE)
+        )
         acl_table_permissions_set = set(acl_table_permissions_tuples)
-        table_selects_direct_tuples = tuple(('SELECT', table_select.schema_name, table_select.table_name) for table_select in table_selects_direct)
+        table_selects_direct_tuples = tuple(
+            ('SELECT', table_select.schema_name, table_select.table_name) for table_select in table_selects_direct
+        )
         table_selects_direct_set = set(table_selects_direct_tuples)
-        acl_table_permissions_to_revoke = tuple(row for row in acl_table_permissions_tuples if row not in table_selects_direct_set)
-        acl_table_permissions_to_grant = tuple(row for row in table_selects_direct_tuples if row not in acl_table_permissions_set)
+        acl_table_permissions_to_revoke = tuple(
+            row for row in acl_table_permissions_tuples if row not in table_selects_direct_set
+        )
+        acl_table_permissions_to_grant = tuple(
+            row for row in table_selects_direct_tuples if row not in acl_table_permissions_set
+        )
 
         # Real ACL permissions on schemas
-        acl_schema_permissions_tuples = tuple((row['privilege_type'], row['name_1']) for row in get_acl_rows(existing_permissions, _SCHEMA))
+        acl_schema_permissions_tuples = tuple(
+            (row['privilege_type'], row['name_1']) for row in get_acl_rows(existing_permissions, _SCHEMA)
+        )
         acl_schema_permissions_set = set(acl_schema_permissions_tuples)
-        schema_direct_tuples = \
-            tuple(('USAGE', schema_usage.schema_name) for schema_usage in schema_usages_direct) + \
-            tuple(('CREATE', schema_usage.schema_name) for schema_usage in schema_creates_direct)
+        schema_direct_tuples = tuple(
+            ('USAGE', schema_usage.schema_name) for schema_usage in schema_usages_direct
+        ) + tuple(('CREATE', schema_usage.schema_name) for schema_usage in schema_creates_direct)
         schema_direct_set = set(schema_direct_tuples)
-        acl_schema_permissions_to_revoke = tuple(row for row in acl_schema_permissions_tuples if row not in schema_direct_tuples)
-        acl_schema_permissions_to_grant = tuple(row for row in schema_direct_tuples if row not in acl_schema_permissions_set)
+        acl_schema_permissions_to_revoke = tuple(
+            row for row in acl_schema_permissions_tuples if row not in schema_direct_tuples
+        )
+        acl_schema_permissions_to_grant = tuple(
+            row for row in schema_direct_tuples if row not in acl_schema_permissions_set
+        )
 
         # Gather all changes to be made to objects - the current user must be owner of them
-        schema_ownerships_that_exist = tuple(SchemaOwnership(perm['name_1']) for perm in existing_permissions if perm['on'] == 'schema' and perm['privilege_type'] == 'OWNER')
-        schema_ownerships_to_revoke = tuple(schema_ownership for schema_ownership in schema_ownerships_that_exist if schema_ownership not in schema_ownerships)
-        schema_ownerships_to_grant = tuple(schema_ownership for schema_ownership in schema_ownerships if schema_ownership not in schema_ownerships_that_exist)
+        schema_ownerships_that_exist = tuple(
+            SchemaOwnership(perm['name_1'])
+            for perm in existing_permissions
+            if perm['on'] == 'schema' and perm['privilege_type'] == 'OWNER'
+        )
+        schema_ownerships_to_revoke = tuple(
+            schema_ownership
+            for schema_ownership in schema_ownerships_that_exist
+            if schema_ownership not in schema_ownerships
+        )
+        schema_ownerships_to_grant = tuple(
+            schema_ownership
+            for schema_ownership in schema_ownerships
+            if schema_ownership not in schema_ownerships_that_exist
+        )
         database_connect_roles = get_acl_roles(
-            'CONNECT', 'pg_database', 'datname', 'datacl', '\\_pgsr\\_global\\_database\\_connect\\_%',
-            all_database_connect_names)
+            'CONNECT',
+            'pg_database',
+            'datname',
+            'datacl',
+            '\\_pgsr\\_global\\_database\\_connect\\_%',
+            all_database_connect_names,
+        )
         database_connect_roles_to_create = keys_with_none_value(database_connect_roles)
         schema_usage_roles = get_acl_roles(
-            'USAGE', 'pg_namespace', 'nspname', 'nspacl', f'\\_pgsr\\_local\\_{db_oid}_\\schema\\_usage\\_%',
-            all_schema_usage_indirect_names)
+            'USAGE',
+            'pg_namespace',
+            'nspname',
+            'nspacl',
+            f'\\_pgsr\\_local\\_{db_oid}_\\schema\\_usage\\_%',
+            all_schema_usage_indirect_names,
+        )
         schema_usage_roles_to_create = keys_with_none_value(schema_usage_roles)
         schema_create_roles = get_acl_roles(
-            'CREATE', 'pg_namespace', 'nspname', 'nspacl', f'\\_pgsr\\_local\\_{db_oid}_\\schema\\_create\\_%',
-            all_schema_create_indirect_names)
+            'CREATE',
+            'pg_namespace',
+            'nspname',
+            'nspacl',
+            f'\\_pgsr\\_local\\_{db_oid}_\\schema\\_create\\_%',
+            all_schema_create_indirect_names,
+        )
         schema_create_roles_to_create = keys_with_none_value(schema_create_roles)
         table_select_roles = get_acl_roles_in_schema(
-            'SELECT', 'pg_class', 'relname', 'relacl', 'relnamespace', f'\\_pgsr\\_local\\_{db_oid}_\\table\\_select\\_%',
-            all_table_select_indirect_names)
+            'SELECT',
+            'pg_class',
+            'relname',
+            'relacl',
+            'relnamespace',
+            f'\\_pgsr\\_local\\_{db_oid}_\\table\\_select\\_%',
+            all_table_select_indirect_names,
+        )
         table_select_roles_to_create = keys_with_none_value(table_select_roles)
 
         # Find the roles that own all the objects to be manipulated
         # For each table, we also need USAGE on its schemas, but it's not guaranteed that the
         # current user would already have it. In most cases the owner of its schema would have usage
         # Maybe there's a more robust way that would cover more cases, but it would be more complicated
-        databases_needing_ownerships = \
-            database_connect_roles_to_create
-        tables_needing_ownerships = \
-            table_select_roles_to_create + \
-            tuple((perm[1], perm[2]) for perm in acl_table_permissions_to_revoke) + \
-            tuple((perm[1], perm[2]) for perm in acl_table_permissions_to_grant)
-        schemas_needing_ownership = \
-            tuple(schema_ownership.schema_name for schema_ownership in schema_ownerships_to_revoke) + \
-            tuple(schema_ownership.schema_name for schema_ownership in schema_ownerships_to_grant) + \
-            tuple(perm[1] for perm in acl_schema_permissions_to_revoke) + \
-            tuple(perm[1] for perm in acl_schema_permissions_to_grant) + \
-            schema_usage_roles_to_create + \
-            tuple(schema_name for schema_name, table_name in tables_needing_ownerships)
+        databases_needing_ownerships = database_connect_roles_to_create
+        tables_needing_ownerships = (
+            table_select_roles_to_create
+            + tuple((perm[1], perm[2]) for perm in acl_table_permissions_to_revoke)
+            + tuple((perm[1], perm[2]) for perm in acl_table_permissions_to_grant)
+        )
+        schemas_needing_ownership = (
+            tuple(schema_ownership.schema_name for schema_ownership in schema_ownerships_to_revoke)
+            + tuple(schema_ownership.schema_name for schema_ownership in schema_ownerships_to_grant)
+            + tuple(perm[1] for perm in acl_schema_permissions_to_revoke)
+            + tuple(perm[1] for perm in acl_schema_permissions_to_grant)
+            + schema_usage_roles_to_create
+            + tuple(schema_name for schema_name, table_name in tables_needing_ownerships)
+        )
         database_owners = get_owners('pg_database', 'datdba', 'datname', databases_needing_ownerships)
         schema_owners = get_owners('pg_namespace', 'nspowner', 'nspname', schemas_needing_ownership)
-        table_owners = get_owners_in_schema('pg_class', 'relowner', 'relnamespace', 'relname', tables_needing_ownerships)
+        table_owners = get_owners_in_schema(
+            'pg_class',
+            'relowner',
+            'relnamespace',
+            'relname',
+            tables_needing_ownerships,
+        )
 
         # ... and the main role we're dealing with if necessary (only needed if giving ownership)
         role_if_needed = {(role_name,)} if schema_ownerships_to_grant else set()
@@ -665,7 +1050,6 @@ def sync_roles(conn, role_name, grants=(), preserve_existing_grants_in_schemas=(
         # ... and temporarily grant the current user them
         roles_to_grant = tuple((role_if_needed | set(schema_owners) | set(table_owners)) - {(current_user,)})
         with temporary_grant_of(roles_to_grant):
-
             # Grant or revoke schema ownerships
             for schema_ownership in schema_ownerships_to_revoke:
                 revoke_ownership(sql_object_types[SchemaUsage], role_name, schema_ownership.schema_name)
@@ -706,22 +1090,37 @@ def sync_roles(conn, role_name, grants=(), preserve_existing_grants_in_schemas=(
             existing_permissions = get_existing_permissions(role_name, preserve_existing_grants_in_schemas)
 
             # Real ACL permissions on tables
-            acl_table_permissions_tuples = tuple((row['privilege_type'], row['name_1'], row['name_2']) for row in get_acl_rows(existing_permissions, _TABLE_LIKE))
+            acl_table_permissions_tuples = tuple(
+                (row['privilege_type'], row['name_1'], row['name_2'])
+                for row in get_acl_rows(existing_permissions, _TABLE_LIKE)
+            )
             acl_table_permissions_set = set(acl_table_permissions_tuples)
-            table_selects_direct_tuples = tuple(('SELECT', table_select.schema_name, table_select.table_name) for table_select in table_selects_direct)
+            table_selects_direct_tuples = tuple(
+                ('SELECT', table_select.schema_name, table_select.table_name) for table_select in table_selects_direct
+            )
             table_selects_direct_set = set(table_selects_direct_tuples)
-            acl_table_permissions_to_revoke = tuple(row for row in acl_table_permissions_tuples if row not in table_selects_direct_set)
-            acl_table_permissions_to_grant = tuple(row for row in table_selects_direct_tuples if row not in acl_table_permissions_set)
+            acl_table_permissions_to_revoke = tuple(
+                row for row in acl_table_permissions_tuples if row not in table_selects_direct_set
+            )
+            acl_table_permissions_to_grant = tuple(
+                row for row in table_selects_direct_tuples if row not in acl_table_permissions_set
+            )
 
             # Real ACL permissions on schemas
-            acl_schema_permissions_tuples = tuple((row['privilege_type'], row['name_1']) for row in get_acl_rows(existing_permissions, _SCHEMA))
+            acl_schema_permissions_tuples = tuple(
+                (row['privilege_type'], row['name_1']) for row in get_acl_rows(existing_permissions, _SCHEMA)
+            )
             acl_schema_permissions_set = set(acl_schema_permissions_tuples)
-            schema_direct_tuples = \
-                tuple(('USAGE', schema_usage.schema_name) for schema_usage in schema_usages_direct) + \
-                tuple(('CREATE', schema_usage.schema_name) for schema_usage in schema_creates_direct)
+            schema_direct_tuples = tuple(
+                ('USAGE', schema_usage.schema_name) for schema_usage in schema_usages_direct
+            ) + tuple(('CREATE', schema_usage.schema_name) for schema_usage in schema_creates_direct)
             schema_direct_set = set(schema_direct_tuples)
-            acl_schema_permissions_to_revoke = tuple(row for row in acl_schema_permissions_tuples if row not in schema_direct_tuples)
-            acl_schema_permissions_to_grant = tuple(row for row in schema_direct_tuples if row not in acl_schema_permissions_set)
+            acl_schema_permissions_to_revoke = tuple(
+                row for row in acl_schema_permissions_tuples if row not in schema_direct_tuples
+            )
+            acl_schema_permissions_to_grant = tuple(
+                row for row in schema_direct_tuples if row not in acl_schema_permissions_set
+            )
 
             # Revoke direct permissions on tables and schemas
             for perm in acl_table_permissions_to_revoke:
@@ -736,10 +1135,19 @@ def sync_roles(conn, role_name, grants=(), preserve_existing_grants_in_schemas=(
                 grant(sql_grants[Privilege[perm[0]]], sql.SQL('SCHEMA'), (perm[1],), role_name)
 
         # Grant login if we need to
-        login_row = next((perm for perm in existing_permissions if perm['on'] == 'cluster' and perm['privilege_type'] == 'LOGIN'), None)
+        login_row = next(
+            (perm for perm in existing_permissions if perm['on'] == 'cluster' and perm['privilege_type'] == 'LOGIN'),
+            None,
+        )
         can_login = login_row is not None
-        valid_until = datetime.strptime(login_row['name_1'], '%Y-%m-%dT%H:%M:%S.%f%z') if login_row is not None and login_row['name_1'] is not None else None
-        logins_to_grant = logins and (not can_login or valid_until != logins[0].valid_until or logins[0].password is not None)
+        valid_until = (
+            datetime.strptime(login_row['name_1'], '%Y-%m-%dT%H:%M:%S.%f%z')
+            if login_row is not None and login_row['name_1'] is not None
+            else None
+        )
+        logins_to_grant = logins and (
+            not can_login or valid_until != logins[0].valid_until or logins[0].password is not None
+        )
         logins_to_revoke = not logins and can_login
         if logins_to_grant:
             grant_login(role_name, logins[0])
@@ -748,33 +1156,75 @@ def sync_roles(conn, role_name, grants=(), preserve_existing_grants_in_schemas=(
             revoke_login(role_name)
 
         # Grant memberships if we need to
-        memberships = set(perm['name_1'] for perm in existing_permissions if perm['on'] == 'role' and perm['privilege_type'] == 'MEMBER')
-        database_connect_memberships_to_grant = tuple(role for role in database_connect_roles.values() if role not in memberships)
-        table_select_memberships_to_grant = tuple(role for role in table_select_roles.values() if role not in memberships)
-        schema_usage_memberships_to_grant = tuple(role for role in schema_usage_roles.values() if role not in memberships)
-        schema_create_memberships_to_grant = tuple(role for role in schema_create_roles.values() if role not in memberships)
-        role_memberships_to_grant = tuple(role_membership for role_membership in role_memberships if role_membership.role_name not in memberships)
+        memberships = {
+            perm['name_1']
+            for perm in existing_permissions
+            if perm['on'] == 'role' and perm['privilege_type'] == 'MEMBER'
+        }
+        database_connect_memberships_to_grant = tuple(
+            role for role in database_connect_roles.values() if role not in memberships
+        )
+        table_select_memberships_to_grant = tuple(
+            role for role in table_select_roles.values() if role not in memberships
+        )
+        schema_usage_memberships_to_grant = tuple(
+            role for role in schema_usage_roles.values() if role not in memberships
+        )
+        schema_create_memberships_to_grant = tuple(
+            role for role in schema_create_roles.values() if role not in memberships
+        )
+        role_memberships_to_grant = tuple(
+            role_membership for role_membership in role_memberships if role_membership.role_name not in memberships
+        )
         for membership in role_memberships_to_grant:
             if not get_role_exists(membership.role_name):
                 create_role(membership.role_name)
-        grant_memberships(database_connect_memberships_to_grant \
-            + schema_usage_memberships_to_grant \
-            + schema_create_memberships_to_grant \
-            + table_select_memberships_to_grant \
+        grant_memberships(
+            database_connect_memberships_to_grant
+            + schema_usage_memberships_to_grant
+            + schema_create_memberships_to_grant
+            + table_select_memberships_to_grant
             + tuple(membership.role_name for membership in role_memberships),
-        role_name)
+            role_name,
+        )
 
         # Revoke memberships if we need to
-        memberships_to_revoke = memberships \
-            - set(role_membership.role_name for role_membership in role_memberships) \
-            - set(role for role in database_connect_roles.values()) \
-            - set(role for role in schema_usage_roles.values()) \
-            - set(role for role in schema_create_roles.values()) \
-            - set(role for role in table_select_roles.values())
+        memberships_to_revoke = (
+            memberships
+            - {role_membership.role_name for role_membership in role_memberships}
+            - set(database_connect_roles.values())
+            - set(schema_usage_roles.values())
+            - set(schema_create_roles.values())
+            - set(table_select_roles.values())
+        )
         revoke_memberships(memberships_to_revoke, role_name)
 
 
 def drop_unused_roles(conn, lock_key=1):
+    """Drop automatically-managed helper roles that are no longer in use.
+
+    This function inspects the database for helper roles created by this
+    application (roles with names matching the internal _pgsr_* patterns),
+    and drops those which are not referenced by any ACL entries. It acquires
+    an advisory lock specified by lock_key to avoid races, and runs inside a
+    transaction.
+
+    Parameters
+    ----------
+    conn : SQLAlchemy Connection
+        A SQLAlchemy Connection bound to a Postgres database.
+    lock_key : int, optional
+        The advisory lock key to use while performing the drop operations,
+        by default 1.
+
+    Returns:
+    -------
+    None
+
+    Notes:
+    -----
+    The function logs progress and will no-op if no unused roles are found.
+    """
     logger.info('Dropping unused roles...')
 
     execute_sql = partial(_execute_sql, conn)
@@ -789,7 +1239,7 @@ def drop_unused_roles(conn, lock_key=1):
     }[conn.engine.driver]
 
     with transaction():
-        results =  execute_sql(sql.SQL(_UNUSED_ROLES_SQL)).fetchall()
+        results = execute_sql(sql.SQL(_UNUSED_ROLES_SQL)).fetchall()
 
         if not results:
             logger.info('No roles to drop')
@@ -797,11 +1247,13 @@ def drop_unused_roles(conn, lock_key=1):
 
         lock(sql)
 
-        for role_name, in results:
+        for (role_name,) in results:
             logger.info('Dropping role %s', role_name)
-            execute_sql(sql.SQL('DROP ROLE {role_name}').format(
-                role_name=sql.Identifier(role_name)
-            ))
+            execute_sql(
+                sql.SQL('DROP ROLE {role_name}').format(
+                    role_name=sql.Identifier(role_name),
+                ),
+            )
 
 
 _KNOWN_PRIVILEGES = {
@@ -864,7 +1316,7 @@ _IN_SCHEMA = {
 # permissions granted to the role. Hence not having it inline with the Python code, and it being
 # a touch over-engineered for what it does right now
 # Based on the queries at at https://stackoverflow.com/a/78466268/1319998
-_EXISTING_PERMISSIONS_SQL = '''
+_EXISTING_PERMISSIONS_SQL = """
 -- Cluster permissions not "on" anything else
 SELECT
   'cluster' AS on,
@@ -943,9 +1395,9 @@ UNION ALL
   INNER JOIN relkind_mapping r ON r.relkind = c.relkind
   WHERE classid = 'pg_class'::regclass AND grantee = refobjid AND objsubid = 0
 )
-'''
+"""  # noqa: E501
 
-_UNUSED_ROLES_SQL = '''
+_UNUSED_ROLES_SQL = """
 SELECT
   r.rolname
 FROM
@@ -1018,4 +1470,4 @@ WHERE
 
 ORDER BY
   1
-'''
+"""

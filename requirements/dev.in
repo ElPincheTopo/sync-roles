@@ -6,5 +6,6 @@ psycopg[dev]
 pytest-cov
 pytest>=7.4.4
 ruff
+types-psycopg2
 uv
 wrapt>=1.4.1

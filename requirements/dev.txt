@@ -84,6 +84,8 @@ pyyaml==6.0.3
     # via pre-commit
 ruff==0.14.3
     # via -r requirements/dev.in
+types-psycopg2==2.9.21.20251012
+    # via -r requirements/dev.in
 types-setuptools==80.9.0.20250822
     # via psycopg
 types-shapely==2.1.0.20250917
