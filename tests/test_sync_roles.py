@@ -90,7 +90,9 @@ def test_engine(root_engine):
         conn.execute(sa.text(f'DROP DATABASE IF EXISTS {TEST_DATABASE_NAME}'))
         memberships = conn.execute(
             sa.text("""
-            SELECT roleid::regrole, member::regrole FROM pg_auth_members WHERE member::regrole::text LIKE 'test\\_%' OR member::text LIKE '\\_pgsr\\_%'
+            SELECT roleid::regrole, member::regrole
+            FROM pg_auth_members
+            WHERE member::regrole::text LIKE 'test\\_%' OR member::text LIKE '\\_pgsr\\_%'
         """),
         ).fetchall()
         for role, member in memberships:
@@ -386,11 +388,11 @@ def test_login_expired_valid_until_cannot_connect(test_engine):
 
 @pytest.mark.parametrize(
     'get_valid_until',
-    (
+    [
         lambda: None,
         lambda: datetime.now(UTC) - timedelta(minutes=10),
         lambda: datetime.now(UTC) + timedelta(minutes=10),
-    ),
+    ],
 )
 def test_login_incorrect_password_cannot_connect(test_engine, get_valid_until):
     role_name = get_test_role()
@@ -414,11 +416,11 @@ def test_login_incorrect_password_cannot_connect(test_engine, get_valid_until):
 
 @pytest.mark.parametrize(
     'get_valid_until',
-    (
+    [
         lambda: None,
         lambda: datetime.now(UTC) - timedelta(minutes=10),
         lambda: datetime.now(UTC) + timedelta(minutes=10),
-    ),
+    ],
 )
 def test_login_is_only_applied_to_passed_role(test_engine, get_valid_until):
     role_name_with_login = get_test_role()
@@ -444,10 +446,10 @@ def test_login_is_only_applied_to_passed_role(test_engine, get_valid_until):
 
 @pytest.mark.parametrize(
     'get_valid_until',
-    (
+    [
         lambda: None,
         lambda: datetime.now(UTC) + timedelta(minutes=10),
-    ),
+    ],
 )
 def test_login_without_database_connect_cannot_connect(test_engine, get_valid_until):
     role_name = get_test_role()
@@ -464,10 +466,10 @@ def test_login_without_database_connect_cannot_connect(test_engine, get_valid_un
 
 @pytest.mark.parametrize(
     'get_valid_until',
-    (
+    [
         lambda: None,
         lambda: datetime.now(UTC) + timedelta(minutes=10),
-    ),
+    ],
 )
 def test_login_with_different_database_connect_cannot_connect(root_engine, test_engine, get_valid_until):
     role_name = get_test_role()
@@ -520,17 +522,17 @@ def test_login_with_valid_until_initialy_future_but_changed_to_be_in_the_past_ca
 
 @pytest.mark.parametrize(
     'get_valid_until_1',
-    (
+    [
         lambda: None,
         lambda: datetime.now(UTC) + timedelta(minutes=10),
-    ),
+    ],
 )
 @pytest.mark.parametrize(
     'get_valid_until_2',
-    (
+    [
         lambda: None,
         lambda: datetime.now(UTC) + timedelta(minutes=10),
-    ),
+    ],
 )
 def test_login_with_with_connect_then_revoked_cannot_connect(test_engine, get_valid_until_1, get_valid_until_2):
     role_name = get_test_role()
@@ -555,11 +557,11 @@ def test_login_with_with_connect_then_revoked_cannot_connect(test_engine, get_va
 
 @pytest.mark.parametrize(
     'get_valid_until',
-    (
+    [
         lambda: None,
         lambda: datetime.now(UTC) - timedelta(minutes=10),
         lambda: datetime.now(UTC) + timedelta(minutes=10),
-    ),
+    ],
 )
 def test_login_with_with_connect_then_login_revoked_cannot_connect(test_engine, get_valid_until):
     role_name = get_test_role()
@@ -584,19 +586,19 @@ def test_login_with_with_connect_then_login_revoked_cannot_connect(test_engine, 
 
 @pytest.mark.parametrize(
     'get_valid_until_1',
-    (
+    [
         lambda: None,
         lambda: datetime.now(UTC) - timedelta(minutes=10),
         lambda: datetime.now(UTC) + timedelta(minutes=10),
-    ),
+    ],
 )
 @pytest.mark.parametrize(
     'get_valid_until_2',
-    (
+    [
         lambda: None,
         lambda: datetime.now(UTC) - timedelta(minutes=10),
         lambda: datetime.now(UTC) + timedelta(minutes=10),
-    ),
+    ],
 )
 def test_login_cannot_connect_with_old_password(test_engine, get_valid_until_1, get_valid_until_2):
     role_name = get_test_role()
@@ -628,10 +630,10 @@ def test_login_cannot_connect_with_old_password(test_engine, get_valid_until_1, 
 
 @pytest.mark.parametrize(
     'get_valid_until',
-    (
+    [
         lambda: None,
         lambda: datetime.now(UTC) + timedelta(minutes=10),
-    ),
+    ],
 )
 def test_login_can_connect(test_engine, get_valid_until):
     role_name = get_test_role()
@@ -655,10 +657,10 @@ def test_login_can_connect(test_engine, get_valid_until):
 
 @pytest.mark.parametrize(
     'get_valid_until',
-    (
+    [
         lambda: None,
         lambda: datetime.now(UTC) + timedelta(minutes=10),
-    ),
+    ],
 )
 def test_login_wrapt_can_connect(test_engine, monkeypatch, get_valid_until):
     # Certain instrumentation (elastic-apm specifically) does not play well with psycopg2 because
@@ -712,8 +714,8 @@ def test_login_wrapt_can_connect(test_engine, monkeypatch, get_valid_until):
         assert conn.execute(sa.text('SELECT 1')).fetchall()[0][0] == 1
 
 
-@pytest.mark.parametrize('get_valid_until_1', (lambda: None, lambda: datetime.now(UTC) + timedelta(minutes=10)))
-@pytest.mark.parametrize('get_valid_until_2', (lambda: None, lambda: datetime.now(UTC) + timedelta(minutes=10)))
+@pytest.mark.parametrize('get_valid_until_1', [lambda: None, lambda: datetime.now(UTC) + timedelta(minutes=10)])
+@pytest.mark.parametrize('get_valid_until_2', [lambda: None, lambda: datetime.now(UTC) + timedelta(minutes=10)])
 def test_login_can_connect_after_second_sync_with_valid_until_but_no_password(
     test_engine,
     get_valid_until_1,
@@ -748,11 +750,11 @@ def test_login_can_connect_after_second_sync_with_valid_until_but_no_password(
 
 @pytest.mark.parametrize(
     'get_valid_until_initial',
-    (
+    [
         lambda: None,
         lambda: datetime.now(UTC) - timedelta(minutes=10),
         lambda: datetime.now(UTC) + timedelta(minutes=10),
-    ),
+    ],
 )
 def test_login_cannot_connect_after_second_sync_with_no_password_and_valid_until_in_past(
     test_engine,
@@ -849,7 +851,7 @@ def test_role_membership_revoked(test_engine):
         assert not is_member(conn, role_name, TEST_BASE_ROLE)
 
 
-@pytest.mark.parametrize('compile_', (lambda str_: str_, lambda str_: re.compile(re.escape(str_))))
+@pytest.mark.parametrize('compile_', [lambda str_: str_, lambda str_: re.compile(re.escape(str_))])
 def test_table_direct_select_does_not_increase_roles(test_engine, test_table, compile_):
     schema_name, table_name = test_table
     role_name = get_test_role()
@@ -902,9 +904,9 @@ def test_schema_create_direct_does_not_increase_roles(test_engine, test_table):
     assert num_roles_before == num_roles_after
 
 
-@pytest.mark.parametrize('compile_', (lambda str_: str_, lambda str_: re.compile(re.escape(str_))))
-@pytest.mark.parametrize('schema_usage_direct', (False, True))
-@pytest.mark.parametrize('table_select_direct', (False, True))
+@pytest.mark.parametrize('compile_', [lambda str_: str_, lambda str_: re.compile(re.escape(str_))])
+@pytest.mark.parametrize('schema_usage_direct', [False, True])
+@pytest.mark.parametrize('table_select_direct', [False, True])
 def test_table_select_never_granted_cannot_query(
     test_engine,
     test_table,
@@ -947,9 +949,9 @@ def test_table_select_never_granted_cannot_query(
         assert conn.execute(sa.text(f'SELECT count(*) FROM {schema_name}.{table_name}')).fetchall()[0][0] == 0
 
 
-@pytest.mark.parametrize('compile_', (lambda str_: str_, lambda str_: re.compile(re.escape(str_))))
-@pytest.mark.parametrize('schema_usage_direct', (False, True))
-@pytest.mark.parametrize('table_select_direct', (False, True))
+@pytest.mark.parametrize('compile_', [lambda str_: str_, lambda str_: re.compile(re.escape(str_))])
+@pytest.mark.parametrize('schema_usage_direct', [False, True])
+@pytest.mark.parametrize('table_select_direct', [False, True])
 def test_table_select_granted_then_revoked_cannot_query(
     test_engine,
     test_table,
@@ -992,8 +994,8 @@ def test_table_select_granted_then_revoked_cannot_query(
         assert conn.execute(sa.text(f'SELECT count(*) FROM {schema_name}.{table_name}')).fetchall()[0][0] == 0
 
 
-@pytest.mark.parametrize('compile_', (lambda str_: str_, lambda str_: re.compile(re.escape(str_))))
-@pytest.mark.parametrize('direct', (False, True))
+@pytest.mark.parametrize('compile_', [lambda str_: str_, lambda str_: re.compile(re.escape(str_))])
+@pytest.mark.parametrize('direct', [False, True])
 def test_table_select_usage_never_granted_cannot_query(test_engine, test_table, compile_, direct):
     schema_name, table_name = test_table
     role_name = get_test_role()
@@ -1017,10 +1019,10 @@ def test_table_select_usage_never_granted_cannot_query(test_engine, test_table, 
         assert conn.execute(sa.text(f'SELECT count(*) FROM {schema_name}.{table_name}')).fetchall()[0][0] == 0
 
 
-@pytest.mark.parametrize('compile_1', (lambda str_: str_, lambda str_: re.compile(re.escape(str_))))
-@pytest.mark.parametrize('compile_2', (lambda str_: str_, lambda str_: re.compile(re.escape(str_))))
-@pytest.mark.parametrize('schema_usage_direct', (False, True))
-@pytest.mark.parametrize('table_select_direct', (False, True))
+@pytest.mark.parametrize('compile_1', [lambda str_: str_, lambda str_: re.compile(re.escape(str_))])
+@pytest.mark.parametrize('compile_2', [lambda str_: str_, lambda str_: re.compile(re.escape(str_))])
+@pytest.mark.parametrize('schema_usage_direct', [False, True])
+@pytest.mark.parametrize('table_select_direct', [False, True])
 def test_table_select_granted_then_usage_revoked_cannot_query(
     test_engine,
     test_table,
@@ -1061,9 +1063,9 @@ def test_table_select_granted_then_usage_revoked_cannot_query(
         assert conn.execute(sa.text(f'SELECT count(*) FROM {schema_name}.{table_name}')).fetchall()[0][0] == 0
 
 
-@pytest.mark.parametrize('compile_', (lambda str_: str_, lambda str_: re.compile(re.escape(str_))))
-@pytest.mark.parametrize('schema_usage_direct', (False, True))
-@pytest.mark.parametrize('table_select_direct', (False, True))
+@pytest.mark.parametrize('compile_', [lambda str_: str_, lambda str_: re.compile(re.escape(str_))])
+@pytest.mark.parametrize('schema_usage_direct', [False, True])
+@pytest.mark.parametrize('table_select_direct', [False, True])
 def test_table_select_granted_can_query(test_engine, test_table, compile_, schema_usage_direct, table_select_direct):
     schema_name, table_name = test_table
     role_name = get_test_role()
@@ -1088,8 +1090,8 @@ def test_table_select_granted_can_query(test_engine, test_table, compile_, schem
         assert conn.execute(sa.text(f'SELECT count(*) FROM {schema_name}.{table_name}')).fetchall()[0][0] == 0
 
 
-@pytest.mark.parametrize('schema_usage_direct', (False, True))
-@pytest.mark.parametrize('table_select_direct', (False, True))
+@pytest.mark.parametrize('schema_usage_direct', [False, True])
+@pytest.mark.parametrize('table_select_direct', [False, True])
 def test_table_select_via_regex_granted_can_query(
     test_engine,
     create_test_table,
@@ -1170,9 +1172,9 @@ def test_table_select_via_regex_granted_can_query(
         )
 
 
-@pytest.mark.parametrize('compile_', (lambda str_: str_, lambda str_: re.compile(re.escape(str_))))
-@pytest.mark.parametrize('schema_usage_direct', (False, True))
-@pytest.mark.parametrize('table_select_direct', (False, True))
+@pytest.mark.parametrize('compile_', [lambda str_: str_, lambda str_: re.compile(re.escape(str_))])
+@pytest.mark.parametrize('schema_usage_direct', [False, True])
+@pytest.mark.parametrize('table_select_direct', [False, True])
 def test_table_select_in_two_steps_on_select_can_query(
     test_engine,
     test_table,
@@ -1212,10 +1214,10 @@ def test_table_select_in_two_steps_on_select_can_query(
         assert conn.execute(sa.text(f'SELECT count(*) FROM {schema_name}.{table_name}')).fetchall()[0][0] == 0
 
 
-@pytest.mark.parametrize('compile_1', (lambda str_: str_, lambda str_: re.compile(re.escape(str_))))
-@pytest.mark.parametrize('compile_2', (lambda str_: str_, lambda str_: re.compile(re.escape(str_))))
-@pytest.mark.parametrize('schema_usage_direct', (False, True))
-@pytest.mark.parametrize('table_select_direct', (False, True))
+@pytest.mark.parametrize('compile_1', [lambda str_: str_, lambda str_: re.compile(re.escape(str_))])
+@pytest.mark.parametrize('compile_2', [lambda str_: str_, lambda str_: re.compile(re.escape(str_))])
+@pytest.mark.parametrize('schema_usage_direct', [False, True])
+@pytest.mark.parametrize('table_select_direct', [False, True])
 def test_table_select_in_two_steps_on_usage_can_query(
     test_engine,
     test_table,
@@ -1260,9 +1262,9 @@ def test_table_select_in_two_steps_on_usage_can_query(
         assert conn.execute(sa.text(f'SELECT count(*) FROM {schema_name}.{table_name}')).fetchall()[0][0] == 0
 
 
-@pytest.mark.parametrize('compile_', (lambda str_: str_, lambda str_: re.compile(re.escape(str_))))
-@pytest.mark.parametrize('schema_usage_direct', (False, True))
-@pytest.mark.parametrize('table_select_direct', (False, True))
+@pytest.mark.parametrize('compile_', [lambda str_: str_, lambda str_: re.compile(re.escape(str_))])
+@pytest.mark.parametrize('schema_usage_direct', [False, True])
+@pytest.mark.parametrize('table_select_direct', [False, True])
 def test_table_select_with_usage_in_intermediate_role_can_query(
     test_engine,
     test_table,
@@ -1295,9 +1297,9 @@ def test_table_select_with_usage_in_intermediate_role_can_query(
         assert conn.execute(sa.text(f'SELECT count(*) FROM {schema_name}.{table_name}')).fetchall()[0][0] == 0
 
 
-@pytest.mark.parametrize('compile_', (lambda str_: str_, lambda str_: re.compile(re.escape(str_))))
-@pytest.mark.parametrize('schema_usage_direct', (False, True))
-@pytest.mark.parametrize('table_select_direct', (False, True))
+@pytest.mark.parametrize('compile_', [lambda str_: str_, lambda str_: re.compile(re.escape(str_))])
+@pytest.mark.parametrize('schema_usage_direct', [False, True])
+@pytest.mark.parametrize('table_select_direct', [False, True])
 def test_table_select_granted_can_query_after_deleting_unused_roles(
     test_engine,
     test_table,
@@ -1332,8 +1334,8 @@ def test_table_select_granted_can_query_after_deleting_unused_roles(
         assert conn.execute(sa.text(f'SELECT count(*) FROM {schema_name}.{table_name}')).fetchall()[0][0] == 0
 
 
-@pytest.mark.parametrize('compile_', (lambda str_: str_, lambda str_: re.compile(re.escape(str_))))
-@pytest.mark.parametrize('direct', (False, True))
+@pytest.mark.parametrize('compile_', [lambda str_: str_, lambda str_: re.compile(re.escape(str_))])
+@pytest.mark.parametrize('direct', [False, True])
 def test_table_select_cleared_after_deleting_table(test_engine, test_table, compile_, direct):
     schema_name, table_name = test_table
     role_name = get_test_role()
@@ -1372,9 +1374,9 @@ def test_table_select_cleared_after_deleting_table(test_engine, test_table, comp
     assert number_of_roles_after == number_of_roles_before - 1
 
 
-@pytest.mark.parametrize('compile_', (lambda str_: str_, lambda str_: re.compile(re.escape(str_))))
-@pytest.mark.parametrize('schema_usage_direct', (False, True))
-@pytest.mark.parametrize('table_select_direct', (False, True))
+@pytest.mark.parametrize('compile_', [lambda str_: str_, lambda str_: re.compile(re.escape(str_))])
+@pytest.mark.parametrize('schema_usage_direct', [False, True])
+@pytest.mark.parametrize('table_select_direct', [False, True])
 def test_table_select_and_usage_if_owned_by_other_user(
     test_engine,
     test_table,
@@ -1436,11 +1438,11 @@ def test_table_select_and_usage_if_owned_by_other_user(
         assert conn.execute(sa.text(f'SELECT count(*) FROM {schema_name}.{table_name}')).fetchall()[0][0] == 0
 
 
-@pytest.mark.parametrize('compile_1', (lambda str_: str_, lambda str_: re.compile(re.escape(str_))))
-@pytest.mark.parametrize('compile_2', (lambda str_: str_, lambda str_: re.compile(re.escape(str_))))
-@pytest.mark.parametrize('schema_usage_direct', (False, True))
-@pytest.mark.parametrize('table_select_direct_1', (False, True))
-@pytest.mark.parametrize('table_select_direct_2', (False, True))
+@pytest.mark.parametrize('compile_1', [lambda str_: str_, lambda str_: re.compile(re.escape(str_))])
+@pytest.mark.parametrize('compile_2', [lambda str_: str_, lambda str_: re.compile(re.escape(str_))])
+@pytest.mark.parametrize('schema_usage_direct', [False, True])
+@pytest.mark.parametrize('table_select_direct_1', [False, True])
+@pytest.mark.parametrize('table_select_direct_2', [False, True])
 def test_table_select_granted_can_query_even_if_another_table_not_exists(
     test_engine,
     test_table,
@@ -1474,10 +1476,10 @@ def test_table_select_granted_can_query_even_if_another_table_not_exists(
         assert conn.execute(sa.text(f'SELECT count(*) FROM {schema_name}.{table_name}')).fetchall()[0][0] == 0
 
 
-@pytest.mark.parametrize('compile_', (lambda str_: str_, lambda str_: re.compile(re.escape(str_))))
-@pytest.mark.parametrize('schema_usage_direct', (False, True))
-@pytest.mark.parametrize('table_select_direct_1', (False, True))
-@pytest.mark.parametrize('table_select_direct_2', (False, True))
+@pytest.mark.parametrize('compile_', [lambda str_: str_, lambda str_: re.compile(re.escape(str_))])
+@pytest.mark.parametrize('schema_usage_direct', [False, True])
+@pytest.mark.parametrize('table_select_direct_1', [False, True])
+@pytest.mark.parametrize('table_select_direct_2', [False, True])
 def test_table_select_granted_can_query_even_if_another_table_in_schema_not_exists(
     test_engine,
     test_table,
@@ -1510,7 +1512,7 @@ def test_table_select_granted_can_query_even_if_another_table_in_schema_not_exis
         assert conn.execute(sa.text(f'SELECT count(*) FROM {schema_name}.{table_name}')).fetchall()[0][0] == 0
 
 
-@pytest.mark.parametrize('direct', (False, True))
+@pytest.mark.parametrize('direct', [False, True])
 def test_schema_usage_repeated_does_not_increase_role_count(test_engine, test_table, direct):
     schema_name, _table_name = test_table
     role_name = get_test_role()
@@ -1527,9 +1529,9 @@ def test_schema_usage_repeated_does_not_increase_role_count(test_engine, test_ta
     assert count_roles_1 == count_roles_2
 
 
-@pytest.mark.parametrize('compile_1', (lambda str_: str_, lambda str_: re.compile(re.escape(str_))))
-@pytest.mark.parametrize('compile_2', (lambda str_: str_, lambda str_: re.compile(re.escape(str_))))
-@pytest.mark.parametrize('direct', (False, True))
+@pytest.mark.parametrize('compile_1', [lambda str_: str_, lambda str_: re.compile(re.escape(str_))])
+@pytest.mark.parametrize('compile_2', [lambda str_: str_, lambda str_: re.compile(re.escape(str_))])
+@pytest.mark.parametrize('direct', [False, True])
 def test_table_select_repeated_does_not_increase_role_count(test_engine, test_table, direct, compile_1, compile_2):
     schema_name, table_name = test_table
     role_name = get_test_role()
@@ -1574,7 +1576,7 @@ def test_schema_ownership_can_be_revoked(test_engine, test_table):
         ).fetchall()[0][0]
 
 
-@pytest.mark.parametrize('direct', (False, True))
+@pytest.mark.parametrize('direct', [False, True])
 def test_schema_ownership_and_usage(test_engine, test_table, direct):
     # Regression test of a bug
     schema_name, table_name = test_table
@@ -1625,7 +1627,7 @@ def test_ownership_if_schema_does_not_exist(test_engine):
         )
 
 
-@pytest.mark.parametrize('direct', (False, True))
+@pytest.mark.parametrize('direct', [False, True])
 def test_direct_table_permission_can_be_revoked(test_engine, test_table, direct):
     schema_name, table_name = test_table
     role_name = get_test_role()
@@ -1661,7 +1663,7 @@ def test_direct_table_permission_can_be_revoked(test_engine, test_table, direct)
         assert conn.execute(sa.text(f'SELECT count(*) FROM {schema_name}.{table_name}')).fetchall()[0][0] == 0
 
 
-@pytest.mark.parametrize('direct', (False, True))
+@pytest.mark.parametrize('direct', [False, True])
 def test_direct_table_permission_can_be_revoked_when_not_owner(test_engine, test_table, direct):
     schema_name, table_name = test_table
     role_name_1 = get_test_role()
@@ -1712,7 +1714,7 @@ def test_direct_table_permission_can_be_revoked_when_not_owner(test_engine, test
         assert conn.execute(sa.text(f'SELECT count(*) FROM {schema_name}.{table_name}')).fetchall()[0][0] == 0
 
 
-@pytest.mark.parametrize('direct', (False, True))
+@pytest.mark.parametrize('direct', [False, True])
 def test_default_table_permission_from_ownership_revoked(test_engine, test_table, direct):
     schema_name, table_name = test_table
     role_name = get_test_role()
@@ -1753,7 +1755,7 @@ def test_default_table_permission_from_ownership_revoked(test_engine, test_table
         assert conn.execute(sa.text(f'SELECT count(*) FROM {schema_name}.{table_name}')).fetchall()[0][0] == 0
 
 
-@pytest.mark.parametrize('direct', (False, True))
+@pytest.mark.parametrize('direct', [False, True])
 def test_direct_view_permission_is_revoked(test_engine, test_view, direct):
     schema_name, view_name = test_view
     role_name = get_test_role()
@@ -1789,7 +1791,7 @@ def test_direct_view_permission_is_revoked(test_engine, test_view, direct):
         assert conn.execute(sa.text(f'SELECT count(*) FROM {schema_name}.{view_name}')).fetchall()[0][0] == 0
 
 
-@pytest.mark.parametrize('direct', (False, True))
+@pytest.mark.parametrize('direct', [False, True])
 def test_direct_sequence_permission_is_revoked(test_engine, test_sequence, direct):
     schema_name, sequence_name = test_sequence
     role_name = get_test_role()
@@ -1852,7 +1854,7 @@ def test_direct_usage_permission_is_revoked(test_engine, test_sequence):
         assert conn.execute(sa.text(f"SELECT nextval('{schema_name}.{sequence_name}');")).fetchall()[0][0] == 0
 
 
-@pytest.mark.parametrize('direct', (False, True))
+@pytest.mark.parametrize('direct', [False, True])
 def test_schema_create_roles_can_create_table(test_engine, test_sequence, direct):
     schema_name, _ = test_sequence
     table_name = 'test_table_' + uuid.uuid4().hex
@@ -1877,8 +1879,8 @@ def test_schema_create_roles_can_create_table(test_engine, test_sequence, direct
         conn.execute(sa.text(f'CREATE TABLE {schema_name}.{table_name} (id int)'))
 
 
-@pytest.mark.parametrize('schema_usage_direct', (False, True))
-@pytest.mark.parametrize('schema_create_direct', (False, True))
+@pytest.mark.parametrize('schema_usage_direct', [False, True])
+@pytest.mark.parametrize('schema_create_direct', [False, True])
 def test_schema_create_roles_can_create_view(test_engine, test_table, schema_usage_direct, schema_create_direct):
     schema_name, table_name = test_table
     view_name = 'test_view_' + uuid.uuid4().hex
@@ -1904,7 +1906,7 @@ def test_schema_create_roles_can_create_view(test_engine, test_table, schema_usa
         conn.execute(sa.text(f'CREATE VIEW {schema_name}.{view_name} AS SELECT * FROM {schema_name}.{table_name}'))
 
 
-@pytest.mark.parametrize('direct', (False, True))
+@pytest.mark.parametrize('direct', [False, True])
 def test_schema_create_roles_can_create_sequence(test_engine, test_view, direct):
     schema_name, _ = test_view
     sequence_name = 'test_sequence_' + uuid.uuid4().hex
@@ -1929,8 +1931,8 @@ def test_schema_create_roles_can_create_sequence(test_engine, test_view, direct)
         conn.execute(sa.text(f'CREATE SEQUENCE {schema_name}.{sequence_name} START 101;'))
 
 
-@pytest.mark.parametrize('schema_usage_direct', (False, True))
-@pytest.mark.parametrize('schema_create_direct', (False, True))
+@pytest.mark.parametrize('schema_usage_direct', [False, True])
+@pytest.mark.parametrize('schema_create_direct', [False, True])
 def test_can_use_schema_if_just_created(test_engine, schema_usage_direct, schema_create_direct):
     role_name = get_test_role()
     schema_name = role_name
@@ -1963,8 +1965,8 @@ def test_can_use_schema_if_just_created(test_engine, schema_usage_direct, schema
         assert conn.execute(sa.text(f'SELECT count(*) FROM {schema_name}.{new_table_name}')).fetchall()[0][0] == 0
 
 
-@pytest.mark.parametrize('schema_usage_direct', (False, True))
-@pytest.mark.parametrize('schema_create_direct', (False, True))
+@pytest.mark.parametrize('schema_usage_direct', [False, True])
+@pytest.mark.parametrize('schema_create_direct', [False, True])
 def test_team_role_privileges_are_preserved(test_engine, schema_usage_direct, schema_create_direct):
     # Tries to emulate a feature of Data Workspace https://github.com/uktrade/data-workspace-frontend,
     # where users have membership of "team roles" with associated team schemas. The team schemas

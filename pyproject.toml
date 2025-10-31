@@ -51,10 +51,10 @@ target-version = "py312"
 [tool.ruff.lint]
 select = [
     "A",
-    # "ANN",
+    # "ANN",  Add once we have type annotations
     "B",
     "C4",
-    # "C90",
+    # "C90",  Add after simplifying complex expressions
     "COM",
     "D",
     # "DOC",  # Currently in preview status
@@ -86,7 +86,9 @@ select = [
     "W",
     "YTT",
 ]
-ignore = ["S608"]
+ignore = [
+    "S608"  # No sql injection possible in our use case
+]
 
 
 [tool.ruff.format]
@@ -103,7 +105,12 @@ force-single-line = true
 convention = "google"
 
 [tool.ruff.lint.per-file-ignores]
-"test_pg_sync_roles.py" = ["ANN", "D", "PT007", "S101", "S106", "E501"]
+"tests/test_sync_roles.py" = [
+    "ANN",  # We don't have type annotations in tests
+    "D",  # We don't require docstrings in tests
+    "S101",  # We allow assert statements in tests
+    "S106",  # We allow hardcoding passwords in tests
+]
 
 ################################################################################
 
