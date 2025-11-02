@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
+from enum import auto
 from re import Pattern
 
 
@@ -14,33 +15,33 @@ class Privilege(Enum):
     integer values used for compact storage and serialization.
     """
 
-    SELECT = 1
+    SELECT = auto()
     """Read/select rows from tables or views."""
-    INSERT = 2
+    INSERT = auto()
     """Insert new rows into tables."""
-    UPDATE = 3
+    UPDATE = auto()
     """Update existing rows."""
-    DELETE = 4
+    DELETE = auto()
     """Delete rows."""
-    TRUNCATE = 5
+    TRUNCATE = auto()
     """Remove all rows from a table quickly."""
-    REFERENCES = 6
+    REFERENCES = auto()
     """Grant foreign-key references to a table."""
-    TRIGGER = 7
+    TRIGGER = auto()
     """Create triggers on tables."""
-    CREATE = 8
+    CREATE = auto()
     """Create new objects (e.g., tables, schemas)."""
-    CONNECT = 9
+    CONNECT = auto()
     """Connect to the database."""
-    TEMPORARY = 10
+    TEMPORARY = auto()
     """Create temporary tables."""
-    EXECUTE = 11
+    EXECUTE = auto()
     """Execute functions or procedures."""
-    USAGE = 12
+    USAGE = auto()
     """Use an object (e.g., schema, sequence) without altering it."""
-    SET = 13
+    SET = auto()
     """Set certain run-time parameters for a role/session."""
-    ALTER_SYSTEM = 14
+    ALTER_SYSTEM = auto()
     """Alter system-wide settings."""
 
 
