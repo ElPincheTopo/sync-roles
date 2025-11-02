@@ -166,3 +166,57 @@ class RoleMembership:
     """
 
     role_name: str
+
+
+KNOWN_PRIVILEGES = {
+    'SELECT',
+    'INSERT',
+    'UPDATE',
+    'DELETE',
+    'TRUNCATE',
+    'REFERENCES',
+    'TRIGGER',
+    'CREATE',
+    'CONNECT',
+    'TEMPORARY',
+    'EXECUTE',
+    'USAGE',
+    'SET',
+    'ALTER SYSTEM',
+}
+
+TABLE_LIKE = {
+    'table',
+    'view',
+    'materialized view',
+    'foreign table',
+    'partitioned table',
+    'sequence',
+}
+
+SCHEMA = {
+    'schema',
+}
+
+IN_SCHEMA = {
+    # Table-like things
+    'table',
+    'view',
+    'materialized view',
+    'foreign table',
+    'partitioned table',
+    'sequence',
+    # Type-like things
+    'base type',
+    'composite type',
+    'enum type',
+    'pseudo type',
+    'range type',
+    'multirange type',
+    'domain'
+    # Function-like things
+    'function',
+    'procedure',
+    'aggregate function',
+    'window function',
+}

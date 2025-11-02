@@ -1,4 +1,8 @@
-"""Sync Roles package."""
+"""sync_roles - Database role synchronization library.
+
+A Python library for declaratively managing database users and their permissions.
+Currently supports PostgreSQL with planned support for ClickHouse.
+"""
 
 from sync_roles.core import drop_unused_roles
 from sync_roles.core import sync_roles
@@ -25,3 +29,29 @@ EXECUTE = Privilege.EXECUTE
 USAGE = Privilege.USAGE
 SET = Privilege.SET
 ALTER_SYSTEM = Privilege.ALTER_SYSTEM
+
+
+__all__ = [
+    'ALTER_SYSTEM',
+    'CONNECT',
+    'CREATE',
+    'DELETE',
+    'EXECUTE',
+    'INSERT',
+    'REFERENCES',
+    'SELECT',
+    'SET',
+    'TEMPORARY',
+    'TRIGGER',
+    'TRUNCATE',
+    'UPDATE',
+    'USAGE',
+    'DatabaseConnect',
+    'Login',
+    'Privilege',
+    'RoleMembership',
+    'SchemaCreate',
+    'SchemaOwnership',
+    'SchemaUsage',
+    'TableSelect',
+]
