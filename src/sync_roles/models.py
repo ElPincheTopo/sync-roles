@@ -168,6 +168,8 @@ class RoleMembership:
     role_name: str
 
 
+GrantType = DatabaseConnect | SchemaUsage | SchemaCreate | SchemaOwnership | TableSelect | Login | RoleMembership
+
 KNOWN_PRIVILEGES = {
     'SELECT',
     'INSERT',

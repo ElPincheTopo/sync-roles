@@ -6,6 +6,7 @@ Implements PostgreSQL-specific operations for role synchronization.
 import logging
 from contextlib import contextmanager
 from typing import Any
+from typing import cast
 from uuid import uuid4
 
 import sqlalchemy as sa
@@ -23,6 +24,7 @@ except ImportError:
 from sync_roles.adapters.base import DatabaseAdapter
 from sync_roles.models import IN_SCHEMA
 from sync_roles.models import DatabaseConnect
+from sync_roles.models import GrantType
 from sync_roles.models import Privilege
 from sync_roles.models import SchemaCreate
 from sync_roles.models import SchemaUsage
@@ -111,7 +113,7 @@ UNION ALL
   INNER JOIN relkind_mapping r ON r.relkind = c.relkind
   WHERE classid = 'pg_class'::regclass AND grantee = refobjid AND objsubid = 0
 )
-"""
+"""  # noqa: E501
 
 _UNUSED_ROLES_SQL = """
 SELECT
@@ -208,7 +210,7 @@ class PostgresAdapter(DatabaseAdapter):
         }[conn.engine.driver]
 
         # Prepare SQL constants for privileges and object types
-        self._sql_grants = {
+        self._sql_grants: dict[Privilege, self.sql.SQL] = {
             Privilege.SELECT: self.sql.SQL('SELECT'),
             Privilege.INSERT: self.sql.SQL('INSERT'),
             Privilege.UPDATE: self.sql.SQL('UPDATE'),
@@ -225,7 +227,7 @@ class PostgresAdapter(DatabaseAdapter):
             Privilege.ALTER_SYSTEM: self.sql.SQL('ALTER SYSTEM'),
         }
 
-        self._sql_object_types = {
+        self._sql_object_types: dict[type[GrantType], self.sql.SQL] = {
             TableSelect: self.sql.SQL('TABLE'),
             DatabaseConnect: self.sql.SQL('DATABASE'),
             SchemaUsage: self.sql.SQL('SCHEMA'),
@@ -249,19 +251,23 @@ class PostgresAdapter(DatabaseAdapter):
 
     def get_database_oid(self) -> int:
         """Get the current database's OID."""
-        return self._execute_sql(
+        oid = self._execute_sql(
             self.sql.SQL("""
             SELECT oid FROM pg_database WHERE datname = current_database()
         """),
         ).fetchall()[0][0]
 
+        return cast(int, oid)
+
     def get_role_exists(self, role_name: str) -> bool:
         """Check if a role exists."""
-        return self._execute_sql(
+        exists = self._execute_sql(
             self.sql.SQL('SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = {role_name})').format(
                 role_name=self.sql.Literal(role_name),
             ),
         ).fetchall()[0][0]
+
+        return cast(bool, exists)
 
     def tables_in_schema_matching_regex(self, schema_name: str, table_name_regex) -> tuple[str, ...]:
         """Find all tables in a schema matching a regex pattern."""
@@ -286,7 +292,7 @@ class PostgresAdapter(DatabaseAdapter):
         """Generic lookup in PostgreSQL catalog tables."""
         if not values_to_search_for:
             return []
-        return self._execute_sql(
+        cols = self._execute_sql(
             self.sql.SQL(
                 'SELECT {column_name} FROM {table_name} WHERE {column_name} IN ({values_to_search_for})',
             ).format(
@@ -295,6 +301,8 @@ class PostgresAdapter(DatabaseAdapter):
                 values_to_search_for=self.sql.SQL(',').join(self.sql.Literal(value) for value in values_to_search_for),
             ),
         ).fetchall()
+
+        return cast(list, cols)
 
     def get_existing_in_schema(
         self,
@@ -306,7 +314,7 @@ class PostgresAdapter(DatabaseAdapter):
         """Lookup objects in a schema context."""
         if not values_to_search_for:
             return []
-        return self._execute_sql(
+        objects = self._execute_sql(
             self.sql.SQL("""
             SELECT nspname, {row_name_column_name}
             FROM {table_name} c
@@ -323,6 +331,8 @@ class PostgresAdapter(DatabaseAdapter):
             ),
         ).fetchall()
 
+        return cast(list, objects)
+
     def get_owners(
         self,
         table_name: str,
@@ -333,7 +343,7 @@ class PostgresAdapter(DatabaseAdapter):
         """Get owner roles of database objects."""
         if not values_to_search_for:
             return []
-        return self._execute_sql(
+        owners = self._execute_sql(
             self.sql.SQL("""
             SELECT DISTINCT rolname
             FROM {table_name}
@@ -347,6 +357,8 @@ class PostgresAdapter(DatabaseAdapter):
             ),
         ).fetchall()
 
+        return cast(list, owners)
+
     def get_owners_in_schema(
         self,
         table_name: str,
@@ -358,7 +370,7 @@ class PostgresAdapter(DatabaseAdapter):
         """Get owner roles of objects in schema context."""
         if not values_to_search_for:
             return []
-        return self._execute_sql(
+        owners = self._execute_sql(
             self.sql.SQL("""
             SELECT DISTINCT rolname
             FROM {table_name} c
@@ -376,6 +388,8 @@ class PostgresAdapter(DatabaseAdapter):
                 ),
             ),
         ).fetchall()
+
+        return cast(list, owners)
 
     def get_acl_roles(
         self,
@@ -415,7 +429,7 @@ class PostgresAdapter(DatabaseAdapter):
             ).fetchall()
         )
 
-        return {row_name: role_name for row_name, role_name in row_name_role_names}
+        return dict(row_name_role_names)
 
     def get_acl_roles_in_schema(
         self,
@@ -490,7 +504,7 @@ class PostgresAdapter(DatabaseAdapter):
 
     def get_current_user(self) -> str:
         """Get the current database user."""
-        return self._execute_sql(self.sql.SQL('SELECT CURRENT_USER')).fetchall()[0][0]
+        return cast(str, self._execute_sql(self.sql.SQL('SELECT CURRENT_USER')).fetchall()[0][0])
 
     # ===== Transaction and Locking Methods =====
 
