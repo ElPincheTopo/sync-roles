@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 requires-python = "~=3.12.0"
-dynamic = ["dependencies", "optional-dependencies", "version"]
+dynamic = ["version"]
 
 name = "sync-roles"
 description = "Python utility function to ensure that a DB roles have certain permissions."
@@ -18,14 +18,48 @@ maintainers = [
   { name="Roberto Lapuente Romo", email="roberto@lapuente.me" },
 ]
 
+license = "MIT"
+license-files = ["LICENSE"]
+
 classifiers = [
     "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
+]
+
+dependencies = [
+    "sqlalchemy>=1.4.24",
+]
+
+[project.optional-dependencies]
+postgres-psycopg2 = [
+    "psycopg2-binary>=2.9.0",
+]
+postgres-psycopg3 = [
+    "psycopg>=3.1.0",
+]
+postgres = [
+    "psycopg>=3.1.0",
+]
+
+[dependency-groups]
+dev = [
+    {include-group = "lint"},
+    "psycopg[dev]",
+    "pytest-cov",
+    "pytest>=7.4.4",
+    "types-psycopg2",
+    "uv",
+    "wrapt>=1.4.1",
+]
+lint = [
+    "mypy",
+    "pre-commit",
+    "ruff",
 ]
 
 [project.urls]
 Repository = "https://github.com/elpinchetopo/sync-roles"
+
 
 ################################################################################
 
@@ -33,14 +67,15 @@ Repository = "https://github.com/elpinchetopo/sync-roles"
 include-package-data = false
 
 [tool.setuptools.dynamic]
-dependencies = { file = ["requirements/prod.txt"] }
-optional-dependencies = { dev = { file = ["requirements/dev.txt"] } }
 
 [tool.setuptools.packages.find]
 where = ["src"]
+include = ["sync_roles*"]
+exclude = ["tests*"]
 
 [tool.setuptools-git-versioning]
 enabled = true
+
 
 ################################################################################
 
@@ -105,7 +140,7 @@ force-single-line = true
 convention = "google"
 
 [tool.ruff.lint.per-file-ignores]
-"tests/test_sync_roles.py" = [
+"tests/*.py" = [
     "ANN",  # We don't have type annotations in tests
     "D",  # We don't require docstrings in tests
     "S101",  # We allow assert statements in tests

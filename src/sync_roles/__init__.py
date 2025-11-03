@@ -54,4 +54,6 @@ __all__ = [
     'SchemaOwnership',
     'SchemaUsage',
     'TableSelect',
+    'drop_unused_roles',
+    'sync_roles',
 ]
