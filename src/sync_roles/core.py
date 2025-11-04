@@ -6,8 +6,9 @@ It uses the adapter pattern to delegate database-specific operations.
 
 import logging
 import re
+from collections.abc import Iterable
 from datetime import datetime
-from typing import Any
+from typing import cast
 
 from sync_roles.adapters.base import DatabaseAdapter
 from sync_roles.adapters.postgres import PostgresAdapter
@@ -15,15 +16,19 @@ from sync_roles.models import KNOWN_PRIVILEGES
 from sync_roles.models import SCHEMA
 from sync_roles.models import TABLE_LIKE
 from sync_roles.models import DatabaseConnect
+from sync_roles.models import Grant
+from sync_roles.models import GrantOperation
+from sync_roles.models import GrantOperationType
 from sync_roles.models import Login
 from sync_roles.models import Privilege
 from sync_roles.models import RoleMembership
 from sync_roles.models import SchemaCreate
+from sync_roles.models import SchemaGrant
 from sync_roles.models import SchemaOwnership
 from sync_roles.models import SchemaUsage
 from sync_roles.models import TableSelect
 
-logger = logging.getLogger(__name__)
+log = logging.getLogger(__name__)
 
 
 def _get_adapter(conn) -> DatabaseAdapter:
@@ -44,7 +49,7 @@ def _get_adapter(conn) -> DatabaseAdapter:
 def sync_roles(
     conn,
     role_name: str,
-    grants: tuple[Any, ...] = (),
+    grants: tuple[Grant, ...] = (),
     preserve_existing_grants_in_schemas: tuple[str, ...] = (),
     lock_key: int = 1,
 ):
@@ -88,35 +93,16 @@ def sync_roles(
     RuntimeError
         If an available name for a helper ACL role cannot be found when creating helper roles.
     """
+    _validate_grants(grants)
     adapter = _get_adapter(conn)
 
-    # Validation
-    logins = tuple(grant for grant in grants if isinstance(grant, Login))
-    if len(logins) > 1:
-        raise ValueError('At most 1 Login object can be passed via the grants parameter')
-
     with adapter.transaction():
-        # Phase 1: Get current state (without lock)
-        database_connects = tuple(grant for grant in grants if isinstance(grant, DatabaseConnect))
-        all_database_names = tuple(grant.database_name for grant in database_connects)
-        all_schema_names = tuple(
-            grant.schema_name
-            for grant in grants
-            if isinstance(grant, (SchemaUsage, SchemaCreate, SchemaOwnership, TableSelect))
-        )
-        databases_that_exist = set(adapter.get_existing('pg_database', 'datname', all_database_names))
-        schemas_that_exist = set(adapter.get_existing('pg_namespace', 'nspname', all_schema_names))
-
-        # Filter database connects to only those that exist
-        database_connects_filtered = tuple(
-            database_connect
-            for database_connect in database_connects
-            if (database_connect.database_name,) in databases_that_exist
-        )
-
-        state = _get_current_state(adapter, grants, schemas_that_exist)
-        state['logins'] = logins
-        state['database_connects'] = database_connects_filtered
+        # NOTE: Instead of returning grants, return operations so we can include
+        # the create role and schema ops at this stage. In phase 2 do extra
+        # processing, which for postgres is the ACL stuff but might be different
+        # in other DBs.
+        valid_grants = _remove_invalid_grants(adapter, set(grants))
+        state = _get_current_state(adapter, valid_grants)
 
         role_to_create = not adapter.get_role_exists(role_name)
         db_oid = adapter.get_database_oid()
@@ -152,16 +138,105 @@ def sync_roles(
             changes,
             state,
             current_user,
-            schemas_that_exist,
+            set(adapter.get_schemas(*(grant.schema_name for grant in valid_grants if isinstance(grant, SchemaGrant)))),
             db_oid,
             preserve_existing_grants_in_schemas,
         )
 
 
+def _validate_grants(grants: Iterable[Grant]):
+    """Validate the grants provided.
+
+    Remove any grants that are invalid and raise errors if necessary. Grants can
+    be invalid for various reasons, such as having more than one Login object or
+    referencing a database that doesn't exist.
+
+    Args:
+        adapter (DatabaseAdapter): The database adapter to use for validation.
+        grants (tuple): Tuple of grant objects.
+
+    Raises:
+        ValueError: if invalid grants are found.
+    """
+    # Input validation
+    if count := sum(1 for grant in grants if isinstance(grant, Login)) > 1:
+        raise ValueError(f'At most 1 Login object can be passed via the grants parameter. Got {count}.')
+
+
+def _remove_invalid_grants(adapter: DatabaseAdapter, grants: set[Grant]) -> set[Grant]:
+    """Validate the grants provided.
+
+    Remove any grants that are invalid and raise errors if necessary. Grants can
+    be invalid for various reasons, such as referencing a database that doesn't
+    exist.
+
+    Args:
+        adapter (DatabaseAdapter): The database adapter to use for validation.
+        grants (set[Grant]): Set of grant objects.
+
+    Returns:
+        set[Grant]: The grants without any that were removed because of non-existing
+            databases or schemas.
+    """
+    db_grants = {grant for grant in grants if isinstance(grant, DatabaseConnect)}
+    existing_dbs = set(adapter.get_databases(*(grant.database_name for grant in db_grants)))
+    db_grants_to_ignore = {g for g in db_grants if g.database_name not in existing_dbs}
+
+    schema_grants = {grant for grant in grants if isinstance(grant, SchemaUsage | SchemaCreate)}
+    existing_schemas = set(adapter.get_schemas(*(grant.schema_name for grant in schema_grants)))
+    ownership_schemas = {grant.schema_name for grant in grants if isinstance(grant, SchemaOwnership)}
+    schema_grants_to_ignore = {g for g in schema_grants if g.schema_name not in existing_schemas | ownership_schemas}
+
+    table_grants = {g for g in grants if isinstance(g, TableSelect)}
+    existing_schemas = set(adapter.get_schemas(*(grant.schema_name for grant in table_grants)))
+    expanded_tb_grants = _expand_table_regexp(adapter, {g for g in table_grants if g.schema_name in existing_schemas})
+    existing_tables = set(adapter.get_tables(*((g.schema_name, cast(str, g.table_name)) for g in expanded_tb_grants)))
+    table_grants_to_ignore = {g for g in expanded_tb_grants if (g.schema_name, g.table_name) not in existing_tables}
+
+    if db_grants_to_ignore or schema_grants_to_ignore or table_grants_to_ignore:
+        log.warning(
+            'Some grants are being ignored due to non-existing databases, schemas, '
+            f'or tables: {db_grants_to_ignore | schema_grants_to_ignore | table_grants_to_ignore}',
+        )
+
+    grants -= db_grants_to_ignore
+    grants -= schema_grants_to_ignore
+    grants -= table_grants  # remove all table grants and then add the ones we keep
+    grants |= expanded_tb_grants - table_grants_to_ignore
+
+    return grants
+
+
+def _expand_table_regexp(adapter: DatabaseAdapter, grants: set[TableSelect]) -> set[TableSelect]:
+    """For any Table grants, expand the regexp into the matching table names.
+
+    Args:
+        adapter (DatabaseAdapter): The database adapter to use for validation.
+        grants (set[Grant]): Set of grant objects.
+
+    Returns:
+        set[Grant]: The grants but replacing the Table grants that use regexp with
+            grants that contain the actual table names that match the regexp.
+    """
+    table_selects_regex_name = {grant for grant in grants if isinstance(grant.table_name, re.Pattern)}
+    expanded_grants = {
+        TableSelect(grant.schema_name, table_name, direct=grant.direct)
+        for grant in table_selects_regex_name
+        for table_name in adapter.tables_in_schema_matching_regex(grant.schema_name, grant.table_name)
+    }
+    if table_selects_regex_name:
+        log.debug(
+            f'Replaced Table grants that use regular expressions with their matching tables.'
+            f'Regexp grants: {table_selects_regex_name}, grants for matching tables: {expanded_grants}',
+        )
+    table_grants = grants - table_selects_regex_name
+    table_grants |= expanded_grants
+    return table_grants
+
+
 def _get_current_state(
     adapter: DatabaseAdapter,
-    grants: tuple[Any, ...],
-    schemas_that_exist: set,
+    grants: set[Grant],
 ):
     """Phase 1: Get current state without lock.
 
@@ -170,69 +245,20 @@ def _get_current_state(
     - Names of entities that exist
     - Whether the role needs to be created
     """
-    # Find table selects: in schemas that exist expand all those specified by regex
-    table_selects = tuple(
-        grant for grant in grants if isinstance(grant, TableSelect) and (grant.schema_name,) in schemas_that_exist
-    )
-    table_selects_exact_name = tuple(grant for grant in table_selects if not isinstance(grant.table_name, re.Pattern))
-    table_selects_regex_name = tuple(grant for grant in table_selects if isinstance(grant.table_name, re.Pattern))
-    table_selects = _without_duplicates_preserve_order(
-        table_selects_exact_name
-        + tuple(
-            TableSelect(grant.schema_name, table_name, direct=grant.direct)
-            for grant in table_selects_regex_name
-            for table_name in adapter.tables_in_schema_matching_regex(grant.schema_name, grant.table_name)
-        ),
-    )
-    all_table_names = tuple((grant.schema_name, grant.table_name) for grant in table_selects)
-    tables_that_exist = set(adapter.get_existing_in_schema('pg_class', 'relnamespace', 'relname', all_table_names))
-
     # Split grants by their type
     schema_usages_indirect = tuple(grant for grant in grants if isinstance(grant, SchemaUsage) and not grant.direct)
     schema_usages_direct = tuple(grant for grant in grants if isinstance(grant, SchemaUsage) and grant.direct)
     schema_creates_indirect = tuple(grant for grant in grants if isinstance(grant, SchemaCreate) and not grant.direct)
     schema_creates_direct = tuple(grant for grant in grants if isinstance(grant, SchemaCreate) and grant.direct)
     schema_ownerships = tuple(grant for grant in grants if isinstance(grant, SchemaOwnership))
-    table_selects_indirect = tuple(grant for grant in table_selects if not grant.direct)
-    table_selects_direct = tuple(grant for grant in table_selects if grant.direct)
+    table_selects_indirect = tuple(grant for grant in grants if isinstance(grant, TableSelect) and not grant.direct)
+    table_selects_direct = tuple(grant for grant in grants if isinstance(grant, TableSelect) and grant.direct)
     role_memberships = tuple(grant for grant in grants if isinstance(grant, RoleMembership))
     database_connects = tuple(grant for grant in grants if isinstance(grant, DatabaseConnect))
-
-    # Filter out ACL grants for databases, schemas and tables that don't exist
-    # (But including ACLs on schemas that we're going to own and so will create if necessary)
-    schema_ownerships_names = {schema_ownership.schema_name for schema_ownership in schema_ownerships}
-    schema_usages_indirect = tuple(
-        schema_usage
-        for schema_usage in schema_usages_indirect
-        if (schema_usage.schema_name,) in schemas_that_exist or schema_usage.schema_name in schema_ownerships_names
-    )
-    schema_usages_direct = tuple(
-        schema_usage
-        for schema_usage in schema_usages_direct
-        if (schema_usage.schema_name,) in schemas_that_exist or schema_usage.schema_name in schema_ownerships_names
-    )
-    schema_creates_indirect = tuple(
-        schema_create
-        for schema_create in schema_creates_indirect
-        if (schema_create.schema_name,) in schemas_that_exist or schema_create.schema_name in schema_ownerships_names
-    )
-    schema_creates_direct = tuple(
-        schema_create
-        for schema_create in schema_creates_direct
-        if (schema_create.schema_name,) in schemas_that_exist or schema_create.schema_name in schema_ownerships_names
-    )
-    table_selects_indirect = tuple(
-        table_select
-        for table_select in table_selects_indirect
-        if (table_select.schema_name, table_select.table_name) in tables_that_exist
-    )
-    table_selects_direct = tuple(
-        table_select
-        for table_select in table_selects_direct
-        if (table_select.schema_name, table_select.table_name) in tables_that_exist
-    )
+    logins = tuple(grant for grant in grants if isinstance(grant, Login))
 
     return {
+        'logins': logins,
         'database_connects': database_connects,
         'schema_usages_indirect': schema_usages_indirect,
         'schema_usages_direct': schema_usages_direct,
@@ -242,7 +268,11 @@ def _get_current_state(
         'table_selects_indirect': table_selects_indirect,
         'table_selects_direct': table_selects_direct,
         'role_memberships': role_memberships,
-        'tables_that_exist': tables_that_exist,
+        'tables_that_exist': tuple(
+            adapter.get_tables(
+                *((g.schema_name, cast(str, g.table_name)) for g in {*table_selects_indirect, *table_selects_direct}),
+            ),
+        ),
     }
 
 
@@ -431,61 +461,18 @@ def _apply_changes(
         for schema_ownership in changes['schema_ownerships_to_revoke']:
             adapter.revoke_ownership(sql_object_types[SchemaUsage], role_name, schema_ownership.schema_name)
         for schema_ownership in changes['schema_ownerships_to_grant']:
-            if (schema_ownership.schema_name,) not in schemas_that_exist:
+            if schema_ownership.schema_name not in schemas_that_exist:
                 adapter.create_schema(schema_ownership.schema_name)
             adapter.grant_ownership(sql_object_types[SchemaUsage], role_name, schema_ownership.schema_name)
 
-        # Create database connect roles if we need to
-        database_connect_roles = changes['database_connect_roles']
-        for database_name in changes['database_connect_roles_to_create']:
-            database_connect_role = adapter.get_available_acl_role('_pgsr_global_database_connect_')
-            adapter.create_role(database_connect_role)
-            adapter.grant(
-                sql_grants[Privilege.CONNECT],
-                sql_object_types[DatabaseConnect],
-                (database_name,),
-                database_connect_role,
-            )
-            database_connect_roles[database_name] = database_connect_role
-
-        # Create schema usage roles if we need to
-        schema_usage_roles = changes['schema_usage_roles']
-        for schema_name in changes['schema_usage_roles_to_create']:
-            schema_usage_role = adapter.get_available_acl_role(f'_pgsr_local_{db_oid}_schema_usage_')
-            adapter.create_role(schema_usage_role)
-            adapter.grant(
-                sql_grants[Privilege.USAGE],
-                sql_object_types[SchemaUsage],
-                (schema_name,),
-                schema_usage_role,
-            )
-            schema_usage_roles[schema_name] = schema_usage_role
-
-        # Create schema create roles if we need to
-        schema_create_roles = changes['schema_create_roles']
-        for schema_name in changes['schema_create_roles_to_create']:
-            schema_create_role = adapter.get_available_acl_role(f'_pgsr_local_{db_oid}_schema_create_')
-            adapter.create_role(schema_create_role)
-            adapter.grant(
-                sql_grants[Privilege.CREATE],
-                sql_object_types[SchemaCreate],
-                (schema_name,),
-                schema_create_role,
-            )
-            schema_create_roles[schema_name] = schema_create_role
-
-        # Create table select roles if we need to
-        table_select_roles = changes['table_select_roles']
-        for schema_name, table_name in changes['table_select_roles_to_create']:
-            table_select_role = adapter.get_available_acl_role(f'_pgsr_local_{db_oid}_table_select_')
-            adapter.create_role(table_select_role)
-            adapter.grant(
-                sql_grants[Privilege.SELECT],
-                sql_object_types[TableSelect],
-                (schema_name, table_name),
-                table_select_role,
-            )
-            table_select_roles[(schema_name, table_name)] = table_select_role
+        # Create all ACL roles using helper function
+        database_connect_roles, schema_usage_roles, schema_create_roles, table_select_roles = _create_acl_roles(
+            adapter,
+            changes,
+            sql_grants,
+            sql_object_types,
+            db_oid,
+        )
 
         # Re-check existing permissions because granting ownership by default gives the owner full permissions
         existing_permissions = adapter.get_existing_permissions(role_name, preserve_existing_grants_in_schemas)
@@ -500,15 +487,51 @@ def _apply_changes(
 
         # Revoke direct permissions on tables and schemas
         for perm in acl_changes['acl_table_permissions_to_revoke']:
-            adapter.revoke(sql_grants[Privilege[perm[0]]], adapter.sql.SQL('TABLE'), (perm[1], perm[2]), role_name)
+            adapter.grant(
+                GrantOperation(
+                    type_=GrantOperationType.REVOKE,
+                    privilege=Privilege[perm[0]],
+                    grant=None,
+                    object_type='TABLE',
+                    object_name=(perm[1], perm[2]),
+                    role_name=role_name,
+                ),
+            )
         for perm in acl_changes['acl_schema_permissions_to_revoke']:
-            adapter.revoke(sql_grants[Privilege[perm[0]]], adapter.sql.SQL('SCHEMA'), (perm[1],), role_name)
+            adapter.grant(
+                GrantOperation(
+                    type_=GrantOperationType.REVOKE,
+                    privilege=Privilege[perm[0]],
+                    grant=None,
+                    object_type='SCHEMA',
+                    object_name=(perm[1],),
+                    role_name=role_name,
+                ),
+            )
 
         # Grant direct permissions on tables and schemas
         for perm in acl_changes['acl_table_permissions_to_grant']:
-            adapter.grant(sql_grants[Privilege[perm[0]]], adapter.sql.SQL('TABLE'), (perm[1], perm[2]), role_name)
+            adapter.grant(
+                GrantOperation(
+                    type_=GrantOperationType.GRANT,
+                    privilege=Privilege[perm[0]],
+                    grant=None,
+                    object_type='TABLE',
+                    object_name=(perm[1], perm[2]),
+                    role_name=role_name,
+                ),
+            )
         for perm in acl_changes['acl_schema_permissions_to_grant']:
-            adapter.grant(sql_grants[Privilege[perm[0]]], adapter.sql.SQL('SCHEMA'), (perm[1],), role_name)
+            adapter.grant(
+                GrantOperation(
+                    type_=GrantOperationType.GRANT,
+                    privilege=Privilege[perm[0]],
+                    grant=None,
+                    object_type='SCHEMA',
+                    object_name=(perm[1],),
+                    role_name=role_name,
+                ),
+            )
 
     # Grant login if we need to
     existing_permissions = adapter.get_existing_permissions(role_name, preserve_existing_grants_in_schemas)
@@ -569,6 +592,75 @@ def _apply_changes(
         - set(table_select_roles.values())
     )
     adapter.revoke_memberships(memberships_to_revoke, role_name)
+
+
+def _create_acl_roles(
+    adapter: DatabaseAdapter,
+    changes: dict,
+    sql_grants: dict,
+    sql_object_types: dict,
+    db_oid: str,
+) -> tuple[dict, dict, dict, dict]:
+    """Create ACL roles for database connects, schema usage/create, and table select.
+
+    Returns tuple of (database_connect_roles, schema_usage_roles, schema_create_roles, table_select_roles).
+    """
+    acl_role_configs = [
+        {
+            'roles_dict': changes['database_connect_roles'],
+            'to_create': changes['database_connect_roles_to_create'],
+            'role_prefix': '_pgsr_global_database_connect_',
+            'privilege': Privilege.CONNECT,
+            'object_type': DatabaseConnect,
+        },
+        {
+            'roles_dict': changes['schema_usage_roles'],
+            'to_create': changes['schema_usage_roles_to_create'],
+            'role_prefix': f'_pgsr_local_{db_oid}_schema_usage_',
+            'privilege': Privilege.USAGE,
+            'object_type': SchemaUsage,
+        },
+        {
+            'roles_dict': changes['schema_create_roles'],
+            'to_create': changes['schema_create_roles_to_create'],
+            'role_prefix': f'_pgsr_local_{db_oid}_schema_create_',
+            'privilege': Privilege.CREATE,
+            'object_type': SchemaCreate,
+        },
+        {
+            'roles_dict': changes['table_select_roles'],
+            'to_create': changes['table_select_roles_to_create'],
+            'role_prefix': f'_pgsr_local_{db_oid}_table_select_',
+            'privilege': Privilege.SELECT,
+            'object_type': TableSelect,
+        },
+    ]
+
+    for config in acl_role_configs:
+        for entity_name in config['to_create']:
+            acl_role = adapter.get_available_acl_role(config['role_prefix'])
+            adapter.create_role(acl_role)
+            # Convert entity_name to tuple format expected by adapter.grant
+            entity_tuple = entity_name if isinstance(entity_name, tuple) else (entity_name,)
+            adapter.grant(
+                GrantOperation(
+                    type_=GrantOperationType.GRANT,
+                    privilege=config['privilege'],
+                    grant=None,
+                    object_type=sql_object_types[config['object_type']],
+                    object_name=entity_tuple,
+                    role_name=acl_role,
+                ),
+            )
+
+            config['roles_dict'][entity_name] = acl_role
+
+    return (
+        changes['database_connect_roles'],
+        changes['schema_usage_roles'],
+        changes['schema_create_roles'],
+        changes['table_select_roles'],
+    )
 
 
 def _determine_changes(

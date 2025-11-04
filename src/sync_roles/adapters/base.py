@@ -5,8 +5,11 @@ Defines the interface that all database adapters must implement.
 
 from abc import ABC
 from abc import abstractmethod
+from collections.abc import Iterable
 from contextlib import contextmanager
 from typing import Any
+
+from sync_roles.models import GrantOperation
 
 
 class DatabaseAdapter(ABC):
@@ -61,7 +64,7 @@ class DatabaseAdapter(ABC):
         """
 
     @abstractmethod
-    def get_existing(self, table_name: str, column_name: str, values_to_search_for: tuple) -> list:
+    def get_existing(self, table_name: str, column_name: str, *values_to_search_for: str) -> list:
         """Generic lookup in database catalog tables.
 
         Args:
@@ -74,13 +77,35 @@ class DatabaseAdapter(ABC):
         """
 
     @abstractmethod
+    def get_databases(self, *values_to_search_for: str) -> Iterable[str]:
+        """Generic lookup in database catalog tables.
+
+        Args:
+            values_to_search_for: Values to search for
+
+        Returns:
+            List of matching rows
+        """
+
+    @abstractmethod
+    def get_schemas(self, *values_to_search_for: str) -> Iterable[str]:
+        """Generic lookup in database catalog tables.
+
+        Args:
+            values_to_search_for: Values to search for
+
+        Returns:
+            List of matching rows
+        """
+
+    @abstractmethod
     def get_existing_in_schema(
         self,
         table_name: str,
         namespace_column_name: str,
         row_name_column_name: str,
-        values_to_search_for: tuple,
-    ) -> list:
+        *values_to_search_for: tuple[str, str],
+    ) -> Iterable[tuple[str, str]]:
         """Lookup objects in a schema context.
 
         Args:
@@ -91,6 +116,14 @@ class DatabaseAdapter(ABC):
 
         Returns:
             List of matching (schema, object) tuples
+        """
+
+    @abstractmethod
+    def get_tables(self, *values_to_search_for: tuple[str, str]) -> Iterable[tuple[str, str]]:
+        """Find tables matching given names.
+
+        Args:
+            values_to_search_for (tuple[tuple[str, str]]): A tuple of (schema, table) pairs.
         """
 
     @abstractmethod
@@ -261,25 +294,11 @@ class DatabaseAdapter(ABC):
         """Create a new schema."""
 
     @abstractmethod
-    def grant(self, grant_type: Any, object_type: Any, object_name: tuple, role_name: str):
-        """Grant a privilege on an object to a role.
+    def grant(self, grant_operation: GrantOperation) -> str:
+        """Grant or revoke a privilege on an object to a role.
 
         Args:
-            grant_type: SQL representation of grant type (e.g., sql.SQL('SELECT'))
-            object_type: SQL representation of object type (e.g., sql.SQL('TABLE'))
-            object_name: Tuple of name parts (e.g., (schema, table))
-            role_name: Role to grant to
-        """
-
-    @abstractmethod
-    def revoke(self, grant_type: Any, object_type: Any, object_name: tuple, role_name: str):
-        """Revoke a privilege on an object from a role.
-
-        Args:
-            grant_type: SQL representation of grant type
-            object_type: SQL representation of object type
-            object_name: Tuple of name parts
-            role_name: Role to revoke from
+            grant_operation: GrantOperation object containing all necessary information
         """
 
     @abstractmethod

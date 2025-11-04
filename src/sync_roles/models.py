@@ -43,6 +43,12 @@ class Privilege(Enum):
     """Set certain run-time parameters for a role/session."""
     ALTER_SYSTEM = auto()
     """Alter system-wide settings."""
+    OWN = auto()
+    """Own an object, granting all privileges on it."""
+    LOGIN = auto()
+    """Log in to the database."""
+    ROLE_MEMBERSHIP = auto()
+    """Add a role membership."""
 
 
 @dataclass(frozen=True)
@@ -168,24 +174,26 @@ class RoleMembership:
     role_name: str
 
 
-GrantType = DatabaseConnect | SchemaUsage | SchemaCreate | SchemaOwnership | TableSelect | Login | RoleMembership
+Grant = DatabaseConnect | SchemaUsage | SchemaCreate | SchemaOwnership | TableSelect | Login | RoleMembership
+SchemaGrant = SchemaUsage | SchemaCreate | SchemaOwnership | TableSelect
 
-KNOWN_PRIVILEGES = {
-    'SELECT',
-    'INSERT',
-    'UPDATE',
-    'DELETE',
-    'TRUNCATE',
-    'REFERENCES',
-    'TRIGGER',
-    'CREATE',
-    'CONNECT',
-    'TEMPORARY',
-    'EXECUTE',
-    'USAGE',
-    'SET',
-    'ALTER SYSTEM',
-}
+
+class GrantOperationType(Enum):
+    GRANT = auto()
+    REVOKE = auto()
+
+
+@dataclass
+class GrantOperation:
+    type_: GrantOperationType
+    privilege: Privilege
+    grant: Grant
+    object_type: str
+    object_name: str
+    role_name: str
+
+
+KNOWN_PRIVILEGES = {privilege.name for privilege in Privilege}
 
 TABLE_LIKE = {
     'table',

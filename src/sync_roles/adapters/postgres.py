@@ -4,6 +4,8 @@ Implements PostgreSQL-specific operations for role synchronization.
 """
 
 import logging
+import re
+from collections.abc import Iterable
 from contextlib import contextmanager
 from typing import Any
 from typing import cast
@@ -13,18 +15,23 @@ import sqlalchemy as sa
 
 try:
     from psycopg2 import sql as sql2
+    from psycopg2.errors import InvalidSchemaName
 except ImportError:
     sql2 = None
 
 try:
     from psycopg import sql as sql3
+    from psycopg.errors import InvalidSchemaName
 except ImportError:
     sql3 = None
 
 from sync_roles.adapters.base import DatabaseAdapter
 from sync_roles.models import IN_SCHEMA
 from sync_roles.models import DatabaseConnect
-from sync_roles.models import GrantType
+from sync_roles.models import Grant
+from sync_roles.models import GrantOperation
+from sync_roles.models import GrantOperationType
+from sync_roles.models import Login
 from sync_roles.models import Privilege
 from sync_roles.models import SchemaCreate
 from sync_roles.models import SchemaUsage
@@ -227,11 +234,11 @@ class PostgresAdapter(DatabaseAdapter):
             Privilege.ALTER_SYSTEM: self.sql.SQL('ALTER SYSTEM'),
         }
 
-        self._sql_object_types: dict[type[GrantType], self.sql.SQL] = {
-            TableSelect: self.sql.SQL('TABLE'),
-            DatabaseConnect: self.sql.SQL('DATABASE'),
-            SchemaUsage: self.sql.SQL('SCHEMA'),
-            SchemaCreate: self.sql.SQL('SCHEMA'),
+        self._sql_object_types: dict[type[Grant], str] = {
+            TableSelect: 'TABLE',
+            DatabaseConnect: 'DATABASE',
+            SchemaUsage: 'SCHEMA',
+            SchemaCreate: 'SCHEMA',
         }
 
     def _execute_sql(self, sql_obj):
@@ -269,7 +276,7 @@ class PostgresAdapter(DatabaseAdapter):
 
         return cast(bool, exists)
 
-    def tables_in_schema_matching_regex(self, schema_name: str, table_name_regex) -> tuple[str, ...]:
+    def tables_in_schema_matching_regex(self, schema_name: str, table_name_regex: re.Pattern) -> tuple[str, ...]:
         """Find all tables in a schema matching a regex pattern."""
         # Inspired by https://dba.stackexchange.com/a/345153/37229 to avoid sequential scan on pg_class
         table_names = self._execute_sql(
@@ -284,11 +291,12 @@ class PostgresAdapter(DatabaseAdapter):
             ORDER BY relname
         """).format(
                 schema_name=self.sql.Literal(schema_name),
-            ),
+            )
         ).fetchall()
+
         return tuple(table_name for (table_name,) in table_names if table_name_regex.match(table_name))
 
-    def get_existing(self, table_name: str, column_name: str, values_to_search_for: tuple) -> list:
+    def get_existing(self, table_name: str, column_name: str, *values_to_search_for: str) -> list[str]:
         """Generic lookup in PostgreSQL catalog tables."""
         if not values_to_search_for:
             return []
@@ -302,15 +310,37 @@ class PostgresAdapter(DatabaseAdapter):
             ),
         ).fetchall()
 
-        return cast(list, cols)
+        return [a[0] for a in cols]
+
+    def get_databases(self, *values_to_search_for: str) -> list[str]:
+        """Find databases matching given names.
+
+        Args:
+            values_to_search_for: Values to search for
+
+        Returns:
+            List of matching rows
+        """
+        return self.get_existing('pg_database', 'datname', *values_to_search_for)
+
+    def get_schemas(self, *values_to_search_for: str) -> list[str]:
+        """Find schemas matching given names.
+
+        Args:
+            values_to_search_for: Values to search for
+
+        Returns:
+            List of matching rows
+        """
+        return self.get_existing('pg_namespace', 'nspname', *values_to_search_for)
 
     def get_existing_in_schema(
         self,
         table_name: str,
         namespace_column_name: str,
         row_name_column_name: str,
-        values_to_search_for: tuple,
-    ) -> list:
+        *values_to_search_for: tuple[str, str],
+    ) -> Iterable[tuple[str, str]]:
         """Lookup objects in a schema context."""
         if not values_to_search_for:
             return []
@@ -332,6 +362,14 @@ class PostgresAdapter(DatabaseAdapter):
         ).fetchall()
 
         return cast(list, objects)
+
+    def get_tables(self, *values_to_search_for: tuple[str, str]) -> Iterable[tuple[str, str]]:
+        """Find tables matching given names.
+
+        Args:
+            values_to_search_for (tuple[tuple[str, str]]): A tuple of (schema, table) pairs.
+        """
+        return self.get_existing_in_schema('pg_class', 'relnamespace', 'relname', *values_to_search_for)
 
     def get_owners(
         self,
@@ -534,7 +572,7 @@ class PostgresAdapter(DatabaseAdapter):
         it will roll back. The REVOKE is not in a finally: block because if there was an
         exception this will then cause another error.
         """
-        logger.info('Temporarily granting roles %s to CURRENT_USER', role_names)
+        logger.info(f'Temporarily granting roles {role_names} to CURRENT_USER')
         if role_names:
             self._execute_sql(
                 self.sql.SQL('GRANT {role_names} TO CURRENT_USER').format(
@@ -542,7 +580,7 @@ class PostgresAdapter(DatabaseAdapter):
                 ),
             )
         yield
-        logger.info('Revoking roles %s from CURRENT_USER', role_names)
+        logger.info(f'Revoking roles {role_names} from CURRENT_USER')
         if role_names:
             self._execute_sql(
                 self.sql.SQL('REVOKE {role_names} FROM CURRENT_USER').format(
@@ -551,6 +589,77 @@ class PostgresAdapter(DatabaseAdapter):
             )
 
     # ===== Permission Manipulation Methods =====
+    def grant(self, grant_operation: GrantOperation):
+        """Grant a privilege on an object to a role."""
+        logger.info(f'Applying {grant_operation}')
+        match grant_operation.privilege:
+            case Privilege.OWN:
+                sql_obj = self._build_grant_ownership(grant_operation)
+            case Privilege.LOGIN:
+                sql_obj = self._build_grant_login(grant_operation)
+            case Privilege.ROLE_MEMBERSHIP:
+                sql_obj = self._build_grant_memberships(grant_operation)
+            case _:  # Regular privilege operations (SELECT, USAGE, CREATE, CONNECT, etc.)
+                sql_obj = self._build_grant(grant_operation)
+        self._execute_sql(sql_obj)
+
+    def _build_grant_ownership(self, grant_operation: GrantOperation) -> str:
+        """Build SQL for object ownership operations."""
+        is_grant = grant_operation.type_ == GrantOperationType.GRANT
+
+        sql = self.sql.SQL(f'ALTER {grant_operation.object_type} {{object_name}} OWNER TO {{role_name}}').format(
+            object_name=self.sql.Identifier(grant_operation.object_name),
+            role_name=self.sql.Identifier(grant_operation.role_name) if is_grant else 'CURRENT_USER',
+        )
+        return cast(str, sql)
+
+    def _build_grant_login(self, grant_operation: GrantOperation) -> str:
+        """Build SQL for role login operations."""
+        is_grant = grant_operation.type_ == GrantOperationType.GRANT
+        if is_grant:
+            login = cast(Login, grant_operation.grant)
+            valid_until = login.valid_until.isoformat() if login.valid_until else 'infinity'
+            password_clause = (
+                self.sql.SQL('PASSWORD {password}').format(password=self.sql.Literal(login.password))
+                if login.password is not None
+                else self.sql.SQL('')
+            )
+
+            sql = self.sql.SQL('ALTER ROLE {role_name} WITH LOGIN {password} VALID UNTIL {valid_until}').format(
+                role_name=self.sql.Identifier(grant_operation.role_name),
+                password=password_clause,
+                valid_until=self.sql.Literal(valid_until),
+            )
+        else:
+            sql = self.sql.SQL('ALTER ROLE {role_name} WITH NOLOGIN PASSWORD NULL').format(
+                role_name=self.sql.Identifier(grant_operation.role_name),
+            )
+        return cast(str, sql)
+
+    def _build_grant_memberships(self, grant_operation: GrantOperation) -> str:
+        """Build SQL for role membership operations."""
+        is_grant = grant_operation.type_ == GrantOperationType.GRANT
+        to_or_from = 'TO' if is_grant else 'FROM'
+
+        sql = self.sql.SQL(f'GRANT {{memberships}} {to_or_from} {{role_name}}').format(
+            memberships=self.sql.SQL(',').join(self.sql.Identifier(m) for m in grant_operation.object_name),
+            role_name=self.sql.Identifier(grant_operation.role_name),
+        )
+        return cast(str, sql)
+
+    def _build_grant(self, grant_operation: GrantOperation) -> str:
+        """Build SQL for regular privilege operations (SELECT, USAGE, CREATE, CONNECT, etc.)."""
+        is_grant = grant_operation.type_ == GrantOperationType.GRANT
+        to_or_from = 'TO' if is_grant else 'FROM'
+
+        sql = self.sql.SQL(
+            f'{grant_operation.type_.name} {grant_operation.privilege.name} ON {{object_type}} {{object_name}} {to_or_from} {{role_name}}',
+        ).format(
+            object_type=self.sql.SQL(grant_operation.object_type),
+            object_name=self.sql.Identifier(*grant_operation.object_name),
+            role_name=self.sql.Identifier(grant_operation.role_name),
+        )
+        return cast(str, sql)
 
     def create_role(self, role_name: str):
         """Create a new role."""
@@ -564,36 +673,12 @@ class PostgresAdapter(DatabaseAdapter):
             self.sql.SQL('CREATE SCHEMA {schema_name};').format(schema_name=self.sql.Identifier(schema_name)),
         )
 
-    def grant(self, grant_type: Any, object_type: Any, object_name: tuple, role_name: str):
-        """Grant a privilege on an object to a role."""
-        logger.info('Granting %s on %s %s to role %s', grant_type, object_type, object_name, role_name)
-        self._execute_sql(
-            self.sql.SQL('GRANT {grant_type} ON {object_type} {object_name} TO {role_name}').format(
-                grant_type=grant_type,
-                object_type=object_type,
-                object_name=self.sql.Identifier(*object_name),
-                role_name=self.sql.Identifier(role_name),
-            ),
-        )
-
-    def revoke(self, grant_type: Any, object_type: Any, object_name: tuple, role_name: str):
-        """Revoke a privilege on an object from a role."""
-        logger.info('Revoking %s on %s %s from role %s', grant_type, object_type, object_name, role_name)
-        self._execute_sql(
-            self.sql.SQL('REVOKE {grant_type} ON {object_type} {object_name} FROM {role_name}').format(
-                grant_type=grant_type,
-                object_type=object_type,
-                object_name=self.sql.Identifier(*object_name),
-                role_name=self.sql.Identifier(role_name),
-            ),
-        )
-
     def grant_ownership(self, object_type: Any, role_name: str, object_name: str):
         """Grant ownership of an object to a role."""
         logger.info('Granting ownership of %s %s to role %s', object_type, object_name, role_name)
         self._execute_sql(
             self.sql.SQL('ALTER {object_type} {object_name} OWNER TO {role_name}').format(
-                object_type=object_type,
+                object_type=self.sql.SQL(object_type),
                 role_name=self.sql.Identifier(role_name),
                 object_name=self.sql.Identifier(object_name),
             ),
@@ -604,7 +689,7 @@ class PostgresAdapter(DatabaseAdapter):
         logger.info('Revoking ownership of %s %s from role %s', object_type, object_name, role_name)
         self._execute_sql(
             self.sql.SQL('ALTER {object_type} {object_name} OWNER TO CURRENT_USER').format(
-                object_type=object_type,
+                object_type=self.sql.SQL(object_type),
                 object_name=self.sql.Identifier(object_name),
             ),
         )

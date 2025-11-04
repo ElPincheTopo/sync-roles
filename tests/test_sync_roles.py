@@ -50,6 +50,7 @@ def is_member(conn, child_role_name, parent_role_name):
     ).fetchall()[0][0]
 
 
+@pytest.mark.slow
 def test_many_roles_with_database_connect_does_not_raise_exception(test_engine):
     with test_engine.connect() as conn:
         for role_name in (uuid.uuid4().hex for _ in range(ROLES_PER_TEST)):
