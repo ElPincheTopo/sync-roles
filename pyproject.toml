@@ -141,10 +141,12 @@ convention = "google"
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*.py" = [
-    "ANN",  # We don't have type annotations in tests
     "D",  # We don't require docstrings in tests
     "S101",  # We allow assert statements in tests
     "S106",  # We allow hardcoding passwords in tests
+]
+"tests/test_sync_roles.py" = [
+    "ANN",  # We don't have type annotations in old tests
 ]
 
 ################################################################################
@@ -161,13 +163,32 @@ packages = ["sync_roles"]
 [tool.pytest.ini_options]
 log_cli = false
 log_level = "DEBUG"
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+]
 
 [tool.coverage.run]
-source = ["sync_roles"]
-omit = ["tests/*"]
+source = ["src/sync_roles"]
+omit = ["tests/*", "src/sync_roles/adapters/clickhouse.py"]
 branch = true
 
 [tool.coverage.report]
-fail_under = 90
+fail_under = 98
 show_missing = true
+
+
+################################################################################
+
+[tool.uv]
+# link-mode = "copy"
+upgrade = true
+
+[tool.uv.pip]
+python-version = "3.12"
+
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"
+publish-url = "https://upload.pypi.org/legacy/"
+default = true
 
