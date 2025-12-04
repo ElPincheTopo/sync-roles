@@ -1,3 +1,8 @@
+# sync-roles
+
+Fork of [pg-sync-roles](https://github.com/uktrade/pg-sync-roles). The parent repo doesn't seem to be accessible anymore.
+Work in progress.
+
 # pg-sync-roles [![PyPI package](https://img.shields.io/pypi/v/pg-sync-roles?label=PyPI%20package)](https://pypi.org/project/pg-sync-roles/) [![Test suite](https://img.shields.io/github/actions/workflow/status/uktrade/pg-sync-roles/test.yaml?label=Test%20suite)](https://github.com/uktrade/pg-sync-roles/actions/workflows/test.yaml) [![Code coverage](https://img.shields.io/codecov/c/github/uktrade/pg-sync-roles?label=Code%20coverage)](https://app.codecov.io/gh/uktrade/pg-sync-roles)
 
 Python utility functions to ensure that PostgreSQL roles have certain privileges on database objects or memberships of other roles - useful to periodically synchronise PostgreSQL's role and privilege system with an external store.
@@ -50,7 +55,7 @@ Developing pg-sync-roles
 - Allows for contents of specific schemas to be ignored for the purposes of management of permissions
 
  These features make pg-sync-roles useful when using PostgreSQL as a data warehouse with a high number of users that need granular permissions. The lack of SUPERUSER requirement means that pg-sync-roles is suitable for managed PostgreSQL clusters, for example in Amazon RDS.
- 
+
  Other types of privileges and other object types may be added in future versions.
 
 > [!WARNING]
