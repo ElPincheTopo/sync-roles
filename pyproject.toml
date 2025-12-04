@@ -169,7 +169,7 @@ markers = [
 
 [tool.coverage.run]
 source = ["src/sync_roles"]
-omit = ["tests/*", "src/sync_roles/adapters/clickhouse.py"]
+omit = ["tests/*"]
 branch = true
 
 [tool.coverage.report]
@@ -192,3 +192,37 @@ url = "https://pypi.org/simple"
 publish-url = "https://upload.pypi.org/legacy/"
 default = true
 
+
+################################################################################
+
+# ci = [
+#   "pytest==7.4.4",
+#   # At the time of writing, 1.14.1 is the latest version of wrapt that the latest version of
+#   # elastic-apm can be installed with
+#   "wrapt==1.14.1",
+#   "pytest-cov",
+# ]
+# ci-psycopg2-sqlalchemy1 = [
+#     "psycopg2==2.9.2",
+#     "sqlalchemy==1.4.24",
+# ]
+# ci-psycopg2-9-10-sqlalchemy1 = [
+#     "psycopg2==2.9.10",
+#     "sqlalchemy==1.4.24",
+# ]
+# ci-psycopg2-sqlalchemy2 = [
+#     "psycopg2==2.9.2",
+#     "sqlalchemy==2.0.0",
+# ]
+# ci-psycopg2-9-10-sqlalchemy2-0-31 = [
+#     "psycopg2==2.9.10",
+#     "sqlalchemy==2.0.31",
+# ]
+# ci-psycopg3-sqlalchemy2 = [
+#     "psycopg==3.1.4",
+#     "sqlalchemy==2.0.0",
+# ]
+# ci-psycopg3-sqlalchemy2-0-31 = [
+#     "psycopg==3.1.4",
+#     "sqlalchemy==2.0.31",
+# ]
