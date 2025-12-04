@@ -1,6 +1,7 @@
 """Database-agnostic grant models."""
 
 from dataclasses import dataclass
+from dataclasses import field
 from datetime import datetime
 from enum import Enum
 from enum import auto
@@ -49,6 +50,8 @@ class Privilege(Enum):
     """Log in to the database."""
     ROLE_MEMBERSHIP = auto()
     """Add a role membership."""
+    MAINTAIN = auto()
+    """Maintain permission."""
 
 
 @dataclass(frozen=True)
@@ -181,16 +184,23 @@ SchemaGrant = SchemaUsage | SchemaCreate | SchemaOwnership | TableSelect
 class GrantOperationType(Enum):
     GRANT = auto()
     REVOKE = auto()
+    CREATE = auto()
 
 
-@dataclass
+@dataclass(frozen=True)
+class PrivilegeRecord:
+    object_type: str
+    object_name: str | tuple[str, str] | None
+    privilege: Privilege | None
+    grantee: str | None = None
+    grant: Grant | None = field(default=None, compare=False)
+
+
+@dataclass(frozen=True)
 class GrantOperation:
     type_: GrantOperationType
-    privilege: Privilege
-    grant: Grant
-    object_type: str
-    object_name: str
-    role_name: str
+    privilege: PrivilegeRecord
+    # role_name: str
 
 
 KNOWN_PRIVILEGES = {privilege.name for privilege in Privilege}

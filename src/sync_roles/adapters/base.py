@@ -7,9 +7,19 @@ from abc import ABC
 from abc import abstractmethod
 from collections.abc import Iterable
 from contextlib import contextmanager
-from typing import Any
+from datetime import UTC
 
+from sync_roles.models import DatabaseConnect
+from sync_roles.models import Grant
 from sync_roles.models import GrantOperation
+from sync_roles.models import Login
+from sync_roles.models import Privilege
+from sync_roles.models import PrivilegeRecord
+from sync_roles.models import RoleMembership
+from sync_roles.models import SchemaCreate
+from sync_roles.models import SchemaOwnership
+from sync_roles.models import SchemaUsage
+from sync_roles.models import TableSelect
 
 
 class DatabaseAdapter(ABC):
@@ -22,6 +32,16 @@ class DatabaseAdapter(ABC):
     - Permission management
     """
 
+    _grant_to_obj_type_map: dict[type[Grant], str] = {
+        DatabaseConnect: 'cluster',
+        SchemaUsage: 'schema',
+        SchemaCreate: 'schema',
+        SchemaOwnership: 'schema',
+        TableSelect: 'table',  # TODO: This could be any type of table-like object
+        Login: 'cluster',
+        RoleMembership: 'role',
+    }
+
     def __init__(self, conn):
         """Initialize the adapter with a database connection.
 
@@ -33,19 +53,22 @@ class DatabaseAdapter(ABC):
     # ===== State Retrieval Methods =====
 
     @abstractmethod
-    def get_database_oid(self) -> Any:
-        """Get the current database's unique identifier.
-
-        Returns:
-            Database identifier (OID for PostgreSQL)
-        """
-
-    @abstractmethod
-    def get_role_exists(self, role_name: str) -> bool:
+    def role_exists(self, role_name: str) -> bool:
         """Check if a role exists in the database.
 
         Args:
             role_name: Name of the role to check
+
+        Returns:
+            True if role exists, False otherwise
+        """
+
+    @abstractmethod
+    def get_roles(self, *role_names: str) -> Iterable[str]:
+        """Check if a role exists in the database.
+
+        Args:
+            role_names: Names of the roles to check
 
         Returns:
             True if role exists, False otherwise
@@ -61,19 +84,6 @@ class DatabaseAdapter(ABC):
 
         Returns:
             Tuple of table names matching the pattern
-        """
-
-    @abstractmethod
-    def get_existing(self, table_name: str, column_name: str, *values_to_search_for: str) -> list:
-        """Generic lookup in database catalog tables.
-
-        Args:
-            table_name: Catalog table name (e.g., 'pg_database')
-            column_name: Column name to search
-            values_to_search_for: Values to search for
-
-        Returns:
-            List of matching rows
         """
 
     @abstractmethod
@@ -99,26 +109,6 @@ class DatabaseAdapter(ABC):
         """
 
     @abstractmethod
-    def get_existing_in_schema(
-        self,
-        table_name: str,
-        namespace_column_name: str,
-        row_name_column_name: str,
-        *values_to_search_for: tuple[str, str],
-    ) -> Iterable[tuple[str, str]]:
-        """Lookup objects in a schema context.
-
-        Args:
-            table_name: Catalog table name
-            namespace_column_name: Column name for namespace/schema
-            row_name_column_name: Column name for object name
-            values_to_search_for: Tuples of (schema, object) to search for
-
-        Returns:
-            List of matching (schema, object) tuples
-        """
-
-    @abstractmethod
     def get_tables(self, *values_to_search_for: tuple[str, str]) -> Iterable[tuple[str, str]]:
         """Find tables matching given names.
 
@@ -127,122 +117,81 @@ class DatabaseAdapter(ABC):
         """
 
     @abstractmethod
-    def get_owners(
-        self,
-        table_name: str,
-        owner_column_name: str,
-        name_column_name: str,
-        values_to_search_for: tuple,
-    ) -> list:
+    def get_db_owners(self, *databases: str) -> Iterable[str]:
         """Get owner roles of database objects.
 
         Args:
-            table_name: Catalog table name
-            owner_column_name: Column name for owner OID
-            name_column_name: Column name for object name
-            values_to_search_for: Object names to search for
-
-        Returns:
-            List of owner role names
+            databases (Iterable[str]): The names of the databases to seach for.
         """
 
     @abstractmethod
-    def get_owners_in_schema(
+    def get_schema_owners(self, *schemas: str) -> Iterable[str]:
+        """Get owner roles of schema objects.
+
+        Args:
+            schemas (Iterable[str]): The names of the schemas to seach for.
+        """
+
+    @abstractmethod
+    def get_table_owners(self, *tables: tuple[str, str]) -> Iterable[str]:
+        """Get owner roles of table objects.
+
+        Args:
+            tables (Iterable[tuple[str, str]]): Tuples of (schema, object) to search for.
+        """
+
+    @abstractmethod
+    def get_existing_permissions(
         self,
-        table_name: str,
-        owner_column_name: str,
-        namespace_column_name: str,
-        row_name_column_name: str,
-        values_to_search_for: tuple,
-    ) -> list:
-        """Get owner roles of objects in schema context.
+        role_name: str,
+        preserve_existing_grants_in_schemas: tuple,
+    ) -> set[PrivilegeRecord]:
+        pass
 
-        Args:
-            table_name: Catalog table name
-            owner_column_name: Column name for owner OID
-            namespace_column_name: Column name for namespace
-            row_name_column_name: Column name for object name
-            values_to_search_for: Tuples of (schema, object) to search for
+    def build_proposed_permission(self, role_name: str, grant: Grant) -> set[PrivilegeRecord]:
+        grant_to_privilege_map: dict[type[Grant], Privilege] = {
+            DatabaseConnect: Privilege.CONNECT,
+            SchemaUsage: Privilege.USAGE,
+            SchemaCreate: Privilege.CREATE,
+            SchemaOwnership: Privilege.OWN,
+            TableSelect: Privilege.SELECT,
+            Login: Privilege.LOGIN,
+            RoleMembership: Privilege.ROLE_MEMBERSHIP,
+        }
 
-        Returns:
-            List of owner role names
-        """
+        def obj_name(grant: Grant) -> str | tuple[str, str] | None:
+            match grant:
+                case Login():
+                    if until := grant.valid_until:
+                        if grant.valid_until.tzinfo is None:
+                            until = grant.valid_until.replace(tzinfo=UTC)
+                        valid_until = until.isoformat(timespec='microseconds')
+                    else:
+                        valid_until = ''
+                    password = 'P' if grant.password else ''
+                    return f'{valid_until}{password}' or None
+                case TableSelect():
+                    if not isinstance(grant.table_name, str):
+                        raise ValueError(
+                            f'Table name on Grant {grant} should be of type `str`, got `{grant.table_name}`',
+                        )
+                    return (grant.schema_name, grant.table_name)
+                case DatabaseConnect():
+                    return grant.database_name
+                case RoleMembership():
+                    return grant.role_name
+                case _:  # Schema grants
+                    return grant.schema_name
 
-    @abstractmethod
-    def get_acl_roles(
-        self,
-        privilege_type: str,
-        table_name: str,
-        row_name_column_name: str,
-        acl_column_name: str,
-        role_pattern: str,
-        row_names: tuple,
-    ) -> dict:
-        """Get ACL roles (intermediate roles) for indirect permissions.
-
-        Args:
-            privilege_type: Type of privilege (e.g., 'SELECT', 'USAGE')
-            table_name: Catalog table name
-            row_name_column_name: Column name for object name
-            acl_column_name: Column name for ACL data
-            role_pattern: SQL LIKE pattern for role names
-            row_names: Object names to query
-
-        Returns:
-            Dictionary mapping object_name -> role_name (or None if no role)
-        """
-
-    @abstractmethod
-    def get_acl_roles_in_schema(
-        self,
-        privilege_type: str,
-        table_name: str,
-        row_name_column_name: str,
-        acl_column_name: str,
-        namespace_oid_column_name: str,
-        role_pattern: str,
-        row_names: tuple,
-    ) -> dict:
-        """Get ACL roles for objects in schema context.
-
-        Args:
-            privilege_type: Type of privilege
-            table_name: Catalog table name
-            row_name_column_name: Column name for object name
-            acl_column_name: Column name for ACL data
-            namespace_oid_column_name: Column name for namespace OID
-            role_pattern: SQL LIKE pattern for role names
-            row_names: Tuples of (schema, object) to query
-
-        Returns:
-            Dictionary mapping (schema, object) -> role_name (or None if no role)
-        """
-
-    @abstractmethod
-    def get_existing_permissions(self, role_name: str, preserve_existing_grants_in_schemas: tuple) -> tuple:
-        """Get all existing permissions for a role.
-
-        This is the main state retrieval method that returns all permissions,
-        memberships, and capabilities for a role.
-
-        Args:
-            role_name: Name of the role
-            preserve_existing_grants_in_schemas: Schemas to exclude from results
-
-        Returns:
-            Tuple of permission dictionaries with keys: 'on', 'name_1', 'name_2', 'name_3', 'privilege_type'
-        """
-
-    @abstractmethod
-    def get_available_acl_role(self, base: str) -> str:
-        """Generate a unique intermediate role name.
-
-        Args:
-            base: Base name for the role (e.g., '_pgsr_global_database_connect_')
-
-        Returns:
-            Unique role name
-        """
+        return {
+            PrivilegeRecord(
+                self._grant_to_obj_type_map[type(grant)],
+                obj_name(grant),
+                grant_to_privilege_map[type(grant)],
+                role_name,
+                grant,
+            ),
+        }
 
     @abstractmethod
     def get_current_user(self) -> str:
@@ -286,77 +235,14 @@ class DatabaseAdapter(ABC):
     # ===== Permission Manipulation Methods =====
 
     @abstractmethod
-    def create_role(self, role_name: str):
-        """Create a new role."""
-
-    @abstractmethod
-    def create_schema(self, schema_name: str):
-        """Create a new schema."""
-
-    @abstractmethod
-    def grant(self, grant_operation: GrantOperation) -> str:
+    def grant(self, grant_operation: GrantOperation):
         """Grant or revoke a privilege on an object to a role.
 
         Args:
             grant_operation: GrantOperation object containing all necessary information
         """
 
-    @abstractmethod
-    def grant_ownership(self, object_type: Any, role_name: str, object_name: str):
-        """Grant ownership of an object to a role."""
-
-    @abstractmethod
-    def revoke_ownership(self, object_type: Any, role_name: str, object_name: str):
-        """Revoke ownership of an object from a role."""
-
-    @abstractmethod
-    def grant_login(self, role_name: str, login: Any):
-        """Grant LOGIN capability to a role.
-
-        Args:
-            role_name: Role name
-            login: Login object with password and valid_until
-        """
-
-    @abstractmethod
-    def revoke_login(self, role_name: str):
-        """Revoke LOGIN capability from a role."""
-
-    @abstractmethod
-    def grant_memberships(self, memberships: tuple, role_name: str):
-        """Grant role memberships.
-
-        Args:
-            memberships: Tuple of role names to grant
-            role_name: Role to grant memberships to
-        """
-
-    @abstractmethod
-    def revoke_memberships(self, memberships: set, role_name: str):
-        """Revoke role memberships.
-
-        Args:
-            memberships: Set of role names to revoke
-            role_name: Role to revoke memberships from
-        """
-
     # ===== Utility Methods =====
-
-    @abstractmethod
-    def get_sql_grants(self) -> dict:
-        """Get mapping of Privilege enum to SQL grant strings.
-
-        Returns:
-            Dictionary mapping Privilege -> SQL representation
-        """
-
-    @abstractmethod
-    def get_sql_object_types(self) -> dict:
-        """Get mapping of grant type classes to SQL object type strings.
-
-        Returns:
-            Dictionary mapping grant type class -> SQL representation
-        """
 
     @abstractmethod
     def drop_unused_roles(self, lock_key: int = 1):
