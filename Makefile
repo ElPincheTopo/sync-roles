@@ -42,6 +42,9 @@ stop-fixtures:
 build: clean
 	@$(UV_CMD) build
 
+deploy:
+	@$(UV_CMD) publish
+
 # Misc #########################################################################
 
 clean: nuke-pyc
@@ -77,7 +80,7 @@ tasks:
 	@echo ' └─● build ............ Build the python package.'
 	@echo ''
 	@echo 'DEPLOY 🚀'
-	@echo ' └─● deploy ........... Deploy the python package.'
+	@echo ' └─● deploy ........... Deploy the python package to PyPI.'
 	@echo ''
 	@echo 'MISC ✨'
 	@echo ' ├─● clean ............ Delete temp files'

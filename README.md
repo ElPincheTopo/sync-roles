@@ -1,6 +1,11 @@
 # sync-roles
 
-Fork of [pg-sync-roles](https://github.com/uktrade/pg-sync-roles). The parent repo doesn't seem to be accessible anymore.
+Fork of `pg-sync-roles`([Github](https://github.com/uktrade/pg-sync-roles) | [PyPI](https://pypi.org/project/pg-sync-roles/)) made by the UK Department for Business and Trade. The parent repo doesn't seem to be accessible in Github anymore.
+
+The original code only supported postgres and my original intention was to contribute support for other DBs to that codebase. Because the project is not publicly available anymore and I haven't been able to contact the original authors, I'm publishing my own fork instead.
+
+Currently the code is 100% compatible with the original package, but because it's a new python package I don't plan to maintain 100% backwards compatibility with the original project. I will keep the features but change some of the default behaviour to make it more DB agnostic.
+
 Work in progress.
 
 # pg-sync-roles [![PyPI package](https://img.shields.io/pypi/v/pg-sync-roles?label=PyPI%20package)](https://pypi.org/project/pg-sync-roles/) [![Test suite](https://img.shields.io/github/actions/workflow/status/uktrade/pg-sync-roles/test.yaml?label=Test%20suite)](https://github.com/uktrade/pg-sync-roles/actions/workflows/test.yaml) [![Code coverage](https://img.shields.io/codecov/c/github/uktrade/pg-sync-roles?label=Code%20coverage)](https://app.codecov.io/gh/uktrade/pg-sync-roles)
