@@ -8,8 +8,10 @@ from abc import abstractmethod
 from collections.abc import Iterable
 from contextlib import contextmanager
 from datetime import UTC
+from typing import ClassVar
 
 from sync_roles.models import DatabaseConnect
+from sync_roles.models import DbObjectType
 from sync_roles.models import Grant
 from sync_roles.models import GrantOperation
 from sync_roles.models import Login
@@ -32,14 +34,24 @@ class DatabaseAdapter(ABC):
     - Permission management
     """
 
-    _grant_to_obj_type_map: dict[type[Grant], str] = {
-        DatabaseConnect: 'cluster',
-        SchemaUsage: 'schema',
-        SchemaCreate: 'schema',
-        SchemaOwnership: 'schema',
-        TableSelect: 'table',  # TODO: This could be any type of table-like object
-        Login: 'cluster',
-        RoleMembership: 'role',
+    _grant_to_obj_type_map: ClassVar[dict[type[Grant], DbObjectType]] = {
+        DatabaseConnect: DbObjectType.DATABASE,
+        SchemaUsage: DbObjectType.SCHEMA,
+        SchemaCreate: DbObjectType.SCHEMA,
+        SchemaOwnership: DbObjectType.SCHEMA,
+        TableSelect: DbObjectType.TABLE,  # TODO: This could be any type of table-like object
+        Login: DbObjectType.DATABASE,
+        RoleMembership: DbObjectType.ROLE,
+    }
+
+    _grant_to_privilege_map: ClassVar[dict[type[Grant], Privilege]] = {
+        DatabaseConnect: Privilege.CONNECT,
+        SchemaUsage: Privilege.USAGE,
+        SchemaCreate: Privilege.CREATE,
+        SchemaOwnership: Privilege.OWN,
+        TableSelect: Privilege.SELECT,
+        Login: Privilege.LOGIN,
+        RoleMembership: Privilege.ROLE_MEMBERSHIP,
     }
 
     def __init__(self, conn):
@@ -144,22 +156,30 @@ class DatabaseAdapter(ABC):
     def get_existing_permissions(
         self,
         role_name: str,
-        preserve_existing_grants_in_schemas: tuple,
+        preserve_existing_grants_in_schemas: tuple[str, ...],
     ) -> set[PrivilegeRecord]:
-        pass
+        """Generate the `PrivilegeRecord`s representing existing permissions for a given role.
+
+        Args:
+            role_name (str): The name of the role to check existing permissions for.
+            preserve_existing_grants_in_schemas (tuple): Schemas in which existing grants should be preserved.
+
+        Returns:
+            set[PrivilegeRecord]: A set of existing privilege records.
+        """
 
     def build_proposed_permission(self, role_name: str, grant: Grant) -> set[PrivilegeRecord]:
-        grant_to_privilege_map: dict[type[Grant], Privilege] = {
-            DatabaseConnect: Privilege.CONNECT,
-            SchemaUsage: Privilege.USAGE,
-            SchemaCreate: Privilege.CREATE,
-            SchemaOwnership: Privilege.OWN,
-            TableSelect: Privilege.SELECT,
-            Login: Privilege.LOGIN,
-            RoleMembership: Privilege.ROLE_MEMBERSHIP,
-        }
+        """Generate the proposed `PrivilegeRecord`s for a given grant.
 
-        def obj_name(grant: Grant) -> str | tuple[str, str] | None:
+        Args:
+            role_name (str): The name of the role to grant permissions to.
+            grant (Grant): The grant to generate permissions for.
+
+        Returns:
+            set[PrivilegeRecord]: A set of proposed privilege records.
+        """
+
+        def obj_name(grant: Grant) -> str | tuple[str, str]:
             match grant:
                 case Login():
                     if until := grant.valid_until:
@@ -169,7 +189,7 @@ class DatabaseAdapter(ABC):
                     else:
                         valid_until = ''
                     password = 'P' if grant.password else ''
-                    return f'{valid_until}{password}' or None
+                    return f'{valid_until}{password}'
                 case TableSelect():
                     if not isinstance(grant.table_name, str):
                         raise ValueError(
@@ -187,7 +207,7 @@ class DatabaseAdapter(ABC):
             PrivilegeRecord(
                 self._grant_to_obj_type_map[type(grant)],
                 obj_name(grant),
-                grant_to_privilege_map[type(grant)],
+                self._grant_to_privilege_map[type(grant)],
                 role_name,
                 grant,
             ),

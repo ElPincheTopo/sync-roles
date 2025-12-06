@@ -9,26 +9,17 @@ from collections.abc import Iterable
 from contextlib import contextmanager
 from dataclasses import replace
 from functools import lru_cache
+from types import ModuleType
 from typing import cast
 from uuid import uuid4
 
 import sqlalchemy as sa
 
-try:
-    from psycopg2 import sql as sql2
-    from psycopg2.errors import InvalidSchemaName
-except ImportError:
-    sql2 = None
-
-try:
-    from psycopg import sql as sql3
-    from psycopg.errors import InvalidSchemaName
-except ImportError:
-    sql3 = None
-
 from sync_roles.adapters.base import DatabaseAdapter
 from sync_roles.models import IN_SCHEMA
+from sync_roles.models import TABLE_LIKE
 from sync_roles.models import DatabaseConnect
+from sync_roles.models import DbObjectType
 from sync_roles.models import Grant
 from sync_roles.models import GrantOperation
 from sync_roles.models import GrantOperationType
@@ -39,6 +30,20 @@ from sync_roles.models import SchemaCreate
 from sync_roles.models import SchemaUsage
 from sync_roles.models import TableSelect
 
+sql2: ModuleType | None
+sql3: ModuleType | None
+
+try:
+    from psycopg2 import sql as sql2
+except ImportError:
+    sql2 = None
+
+try:
+    from psycopg import sql as sql3
+except ImportError:
+    sql3 = None
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -46,7 +51,7 @@ logger = logging.getLogger(__name__)
 _EXISTING_PERMISSIONS_SQL = """
 -- Cluster permissions not "on" anything else
 SELECT
-  'cluster' AS on,
+  'database' AS on,
   CASE WHEN privilege_type = 'LOGIN' AND rolvaliduntil IS NOT NULL THEN to_char(rolvaliduntil AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US+00:00') END AS name_1,
   NULL AS name_2,
   NULL AS name_3,
@@ -289,7 +294,14 @@ class PostgresAdapter(DatabaseAdapter):
         return cast(bool, exists)
 
     def get_roles(self, *role_names: str) -> Iterable[str]:
-        """Check if a role exists."""
+        """Check if a role exists.
+
+        Args:
+            role_names (tuple[str, ...]): The names of the roles to check.
+
+        Returns:
+            Iterable[str]: The names of the roles that exist.
+        """
         if not role_names:
             return []
         roles = self._execute_sql(
@@ -299,7 +311,6 @@ class PostgresAdapter(DatabaseAdapter):
         ).fetchall()
 
         return tuple(row[0] for row in roles)
-        # return cast(list, roles)
 
     def tables_in_schema_matching_regex(self, schema_name: str, table_name_regex: re.Pattern) -> tuple[str, ...]:
         """Find all tables in a schema matching a regex pattern."""
@@ -610,30 +621,36 @@ class PostgresAdapter(DatabaseAdapter):
 
         return {(schema_name, row_name): role_name for schema_name, row_name, role_name in row_name_role_names}
 
-    def get_existing_permissions2(self, role_name: str, preserve_existing_grants_in_schemas: tuple) -> tuple:
-        """Get all existing permissions for a role."""
-        preserve_existing_grants_in_schemas_set = set(preserve_existing_grants_in_schemas)
-        results = tuple(
-            row._mapping
-            for row in self._execute_sql(
-                self.sql.SQL(_EXISTING_PERMISSIONS_SQL).format(role_name=self.sql.Literal(role_name)),
-            ).fetchall()
-        )
-        return tuple(
-            row
-            for row in results
-            if row['on'] not in IN_SCHEMA or row['name_1'] not in preserve_existing_grants_in_schemas_set
-        )
-
     def get_existing_permissions(
         self,
         role_name: str,
-        preserve_existing_grants_in_schemas: tuple,
+        preserve_existing_grants_in_schemas: tuple[str, ...],
     ) -> set[PrivilegeRecord]:
-        def _obj_name(record: dict[str, str]) -> str | tuple[str, str] | None:
+        """Return the `PrivilegeRecord`s representing existing permissions for a role.
+
+        Args:
+            role_name (str): The name of the role to check existing permissions for.
+            preserve_existing_grants_in_schemas (tuple): Schemas in which existing grants should be preserved.
+
+        Returns:
+            set[PrivilegeRecord]: A set of existing privilege records.
+        """
+
+        def _obj_type(record: dict[str, str]) -> DbObjectType:
+            if record['on'] in TABLE_LIKE:
+                return DbObjectType.TABLE
+            return {
+                'database': DbObjectType.DATABASE,
+                'schema': DbObjectType.SCHEMA,
+                'table': DbObjectType.TABLE,
+                'view': DbObjectType.TABLE,
+                'role': DbObjectType.ROLE,
+            }[record['on']]
+
+        def _obj_name(record: dict[str, str]) -> str | tuple[str, str]:
             if record['name_2'] is None:
                 if record['name_1'] is None:
-                    return None
+                    return ''
                 return record['name_1']
             return record['name_1'], record['name_2']
 
@@ -649,14 +666,34 @@ class PostgresAdapter(DatabaseAdapter):
         if not self.role_exists(role_name):
             return set()
 
+        preserve_existing_grants_in_schemas_set = set(preserve_existing_grants_in_schemas)
+        results = tuple(
+            row._mapping
+            for row in self._execute_sql(
+                self.sql.SQL(_EXISTING_PERMISSIONS_SQL).format(role_name=self.sql.Literal(role_name)),
+            ).fetchall()
+        )
         return {
-            PrivilegeRecord(record['on'], _obj_name(record), priv(record['privilege_type']), role_name)
-            for record in self.get_existing_permissions2(role_name, preserve_existing_grants_in_schemas)
+            PrivilegeRecord(_obj_type(row), _obj_name(row), priv(row['privilege_type']), role_name)
+            for row in results
+            if row['on'] not in IN_SCHEMA or row['name_1'] not in preserve_existing_grants_in_schemas_set
         }
 
     def build_proposed_permission(self, role_name: str, grant: Grant) -> set[PrivilegeRecord]:
+        """Generate the proposed `PrivilegeRecord`s for a given grant.
+
+        Calls the base implementation for direct permissions, and generates the intermediate
+        role logic for indirect permissions.
+
+        Args:
+            role_name (str): The name of the role to grant permissions to.
+            grant (Grant): The grant to generate permissions for.
+
+        Returns:
+            set[PrivilegeRecord]: A set of proposed privilege records.
+        """
         if not isinstance(grant, DatabaseConnect | SchemaUsage | SchemaCreate | TableSelect) or (
-            hasattr(grant, 'direct') and grant.direct is True  # and not isinstance(grant, TableSelect)
+            hasattr(grant, 'direct') and grant.direct is True
         ):
             return super().build_proposed_permission(role_name, grant)
 
@@ -672,20 +709,8 @@ class PostgresAdapter(DatabaseAdapter):
                 object_name = grant.schema_name
                 acl_role_name = self._get_schema_create_acl_roles([object_name]).get(object_name)
             case TableSelect():
-                # if grant.direct:
-                #     object_name = grant.schema_name
-                #     acl_role_name = self.get_schema_create_acl_roles([object_name]).get(object_name)
-                #     if not acl_role_name:
-                #         acl_role_name = self._get_intermediate_role_name(type(grant).__name__, object_name)
-                #     return self.build_proposed_permission(
-                #         acl_role_name,
-                #         SchemaUsage(schema_name=grant.schema_name, direct=True),
-                #     )
                 object_name = (grant.schema_name, cast(str, grant.table_name))
                 acl_role_name = self._get_table_select_acl_roles([object_name]).get(object_name)
-                # if acl_role_name is None:
-                #     acl_role_name = self._get_intermediate_role_name(type(grant).__name__, object_name)
-                # extras = self.build_proposed_permission(acl_role_name, SchemaUsage(schema_name=grant.schema_name))
             case _:
                 ValueError(f'Invalid grant type. Expected `SchemaUsage, SchemaCreate or TableSelect`, got {grant}.')
 
@@ -700,7 +725,7 @@ class PostgresAdapter(DatabaseAdapter):
 
         return {
             *privileges,
-            PrivilegeRecord('role', acl_role_name, Privilege.ROLE_MEMBERSHIP, role_name),
+            PrivilegeRecord(DbObjectType.ROLE, acl_role_name, Privilege.ROLE_MEMBERSHIP, role_name),
         }
 
     @lru_cache  # noqa: B019
@@ -770,10 +795,6 @@ class PostgresAdapter(DatabaseAdapter):
         match grant_operation.type_:
             case GrantOperationType.CREATE:
                 match grant_operation.privilege.privilege:
-                    # case Privilege.LOGIN:
-                    #     sql_obj = self.sql.SQL('CREATE ROLE {role_name};').format(
-                    #         role_name=self.sql.Identifier(grant_operation.privilege.grantee),
-                    #     )
                     case Privilege.ROLE_MEMBERSHIP:
                         sql_obj = self.sql.SQL('CREATE ROLE {role_name};').format(
                             role_name=self.sql.Identifier(grant_operation.privilege.object_name),
@@ -802,14 +823,14 @@ class PostgresAdapter(DatabaseAdapter):
 
         if is_grant:
             sql = self.sql.SQL(
-                f'ALTER {grant_operation.privilege.object_type} {{object_name}} OWNER TO {{role_name}}',
+                f'ALTER {grant_operation.privilege.object_type.name} {{object_name}} OWNER TO {{role_name}}',
             ).format(
                 object_name=self.sql.Identifier(grant_operation.privilege.object_name),
                 role_name=self.sql.Identifier(grant_operation.privilege.grantee) if is_grant else 'CURRENT_USER',
             )
         else:
             sql = self.sql.SQL(
-                f'ALTER {grant_operation.privilege.object_type} {{object_name}} OWNER TO CURRENT_USER',
+                f'ALTER {grant_operation.privilege.object_type.name} {{object_name}} OWNER TO CURRENT_USER',
             ).format(object_name=self.sql.Identifier(grant_operation.privilege.object_name))
         return cast(str, sql)
 
@@ -851,10 +872,6 @@ class PostgresAdapter(DatabaseAdapter):
         """Build SQL for regular privilege operations (SELECT, USAGE, CREATE, CONNECT, etc.)."""
         is_grant = grant_operation.type_ == GrantOperationType.GRANT
         to_or_from = 'TO' if is_grant else 'FROM'
-        obj_type = {
-            'cluster': 'DATABASE',
-            'view': 'TABLE',
-        }.get(grant_operation.privilege.object_type, grant_operation.privilege.object_type)
         obj_name = (
             grant_operation.privilege.object_name
             if isinstance(grant_operation.privilege.object_name, tuple)
@@ -862,9 +879,10 @@ class PostgresAdapter(DatabaseAdapter):
         )
 
         sql = self.sql.SQL(
-            f'{grant_operation.type_.name} {grant_operation.privilege.privilege.name} ON {{object_type}} {{object_name}} {to_or_from} {{role_name}}',
+            f'{grant_operation.type_.name} {grant_operation.privilege.privilege.name} '
+            f'ON {{object_type}} {{object_name}} {to_or_from} {{role_name}}',
         ).format(
-            object_type=self.sql.SQL(obj_type),
+            object_type=self.sql.SQL(grant_operation.privilege.object_type.name),
             object_name=self.sql.Identifier(*obj_name),
             role_name=self.sql.Identifier(grant_operation.privilege.grantee),
         )

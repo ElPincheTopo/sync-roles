@@ -182,25 +182,54 @@ SchemaGrant = SchemaUsage | SchemaCreate | SchemaOwnership | TableSelect
 
 
 class GrantOperationType(Enum):
+    """Enumeration of grant operation types."""
+
     GRANT = auto()
     REVOKE = auto()
     CREATE = auto()
 
 
+class DbObjectType(Enum):
+    """Enumeration of database object types."""
+
+    DATABASE = auto()
+    SCHEMA = auto()
+    TABLE = auto()
+    ROLE = auto()
+
+
 @dataclass(frozen=True)
 class PrivilegeRecord:
-    object_type: str
-    object_name: str | tuple[str, str] | None
-    privilege: Privilege | None
+    """Representation of a privilege granted to a role on a database object.
+
+    Attributes:
+        object_type (str): The type of the database object (e.g., 'table', 'schema').
+        object_name (str | tuple[str, str] | None): The name of the object.
+            For schema-scoped objects, this is a tuple of (schema, object).
+            For database-level objects, this is a string.
+        privilege (Privilege | None): The specific privilege granted.
+        grantee (str | None): The name of the role or user that has been granted the privilege.
+        grant (Grant | None): The original Grant object that led to this privilege record.
+    """
+
+    object_type: DbObjectType
+    object_name: str | tuple[str, str]
+    privilege: Privilege
     grantee: str | None = None
     grant: Grant | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True)
 class GrantOperation:
+    """Representation of a grant operation to be performed.
+
+    Attributes:
+        type_ (GrantOperationType): The type of operation (GRANT, REVOKE, CREATE).
+        privilege (PrivilegeRecord): The privilege record associated with the operation.
+    """
+
     type_: GrantOperationType
     privilege: PrivilegeRecord
-    # role_name: str
 
 
 KNOWN_PRIVILEGES = {privilege.name for privilege in Privilege}

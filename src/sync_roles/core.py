@@ -11,8 +11,8 @@ from typing import cast
 
 from sync_roles.adapters.base import DatabaseAdapter
 from sync_roles.adapters.postgres import PostgresAdapter
-from sync_roles.models import TABLE_LIKE
 from sync_roles.models import DatabaseConnect
+from sync_roles.models import DbObjectType
 from sync_roles.models import Grant
 from sync_roles.models import GrantOperation
 from sync_roles.models import GrantOperationType
@@ -116,13 +116,11 @@ def sync_roles(
         changes = _generate_creates(adapter, role_name, *to_grant)
         changes.extend(GrantOperation(GrantOperationType.REVOKE, permission) for permission in to_revoke)
         changes.extend(GrantOperation(GrantOperationType.GRANT, p) for p in to_grant)
-        # if permission.privilege != Privilege.OWN
 
-        # calculate owners
         owners = _generate_owners(adapter, role_name, *to_grant, *to_revoke)
         owners.discard((adapter.get_current_user(),))
         # if role_to_create:
-        #     owners.discard((role_name,))
+        #     owners.discard((role_name,))  # noqa: ERA001
 
         # Sort changes before applying them
         sorted_changes = sorted(changes, key=_sort_grant_operations)
@@ -208,14 +206,6 @@ def _remove_invalid_grants(adapter: DatabaseAdapter, grants: set[Grant]) -> set[
     existing_tables = set(adapter.get_tables(*((g.schema_name, cast(str, g.table_name)) for g in expanded_tb_grants)))
     table_grants_to_ignore = {g for g in expanded_tb_grants if (g.schema_name, g.table_name) not in existing_tables}
 
-    sss = {(g.schema_name, g.direct) for g in expanded_tb_grants - table_grants_to_ignore}
-    sss2 = {
-        (g.schema_name, g.direct)
-        for g in {grant for grant in grants if isinstance(grant, SchemaUsage)} - schema_grants_to_ignore
-        | implied_schema_grants
-    }
-    ts = {SchemaUsage(schema, direct=False) for schema, direct in sss - sss2 if not direct}
-
     if db_grants_to_ignore or schema_grants_to_ignore or table_grants_to_ignore:
         log.warning(
             'Some grants are being ignored due to non-existing databases, schemas, '
@@ -225,7 +215,6 @@ def _remove_invalid_grants(adapter: DatabaseAdapter, grants: set[Grant]) -> set[
     grants -= db_grants_to_ignore
     grants -= schema_grants_to_ignore
     grants |= implied_schema_grants
-    # grants |= ts
     grants -= table_grants  # remove all table grants and then add the ones we keep
     grants |= expanded_tb_grants - table_grants_to_ignore
 
@@ -274,43 +263,49 @@ def _generate_creates(adapter: DatabaseAdapter, role_name: str, *privileges: Pri
     schema_privileges = [
         privilege
         for privilege in privileges
-        if privilege.object_type == 'schema' and privilege.privilege == Privilege.OWN
+        if privilege.object_type == DbObjectType.SCHEMA and privilege.privilege == Privilege.OWN
     ]
-    existing_schemas = adapter.get_schemas(*(privilege.object_name for privilege in schema_privileges))
+    existing_schemas = adapter.get_schemas(*(cast(str, privilege.object_name) for privilege in schema_privileges))
 
     schemas = [
-        GrantOperation(GrantOperationType.CREATE, p) for p in schema_privileges if p.object_name not in existing_schemas
+        GrantOperation(GrantOperationType.CREATE, p)
+        for p in schema_privileges
+        if cast(str, p.object_name) not in existing_schemas
     ]
 
     role_privileges = [privilege for privilege in privileges if privilege.privilege == Privilege.ROLE_MEMBERSHIP]
 
     existing_roles = adapter.get_roles(
         role_name,
-        *(privilege.object_name for privilege in role_privileges),
+        *(cast(str, privilege.object_name) for privilege in role_privileges),
     )
 
     roles = [
-        GrantOperation(GrantOperationType.CREATE, p) for p in role_privileges if p.object_name not in existing_roles
+        GrantOperation(GrantOperationType.CREATE, p)
+        for p in role_privileges
+        if cast(str, p.object_name) not in existing_roles
     ]
 
     if adapter.role_exists(role_name) is False:
         adapter.grant(
-            GrantOperation(GrantOperationType.CREATE, PrivilegeRecord('role', role_name, Privilege.ROLE_MEMBERSHIP)),
+            GrantOperation(
+                GrantOperationType.CREATE,
+                PrivilegeRecord(DbObjectType.ROLE, role_name, Privilege.ROLE_MEMBERSHIP),
+            ),
         )
-        # roles.append(
-        #     GrantOperation2(GrantOperationType.CREATE, PrivilegeRecord('role', role_name, Privilege.ROLE_MEMBERSHIP)),
-        # )
 
     return [*schemas, *roles]
 
 
 def _generate_owners(adapter: DatabaseAdapter, role_name: str, *privileges: PrivilegeRecord):
-    database_owners = adapter.get_db_owners(*(p.object_name for p in privileges if p.object_type == 'cluster'))
-    schemas = [p.object_name for p in privileges if p.object_type == 'schema']
+    database_owners = adapter.get_db_owners(
+        *(cast(str, p.object_name) for p in privileges if p.object_type == DbObjectType.DATABASE),
+    )
+    schemas = [cast(str, p.object_name) for p in privileges if p.object_type == DbObjectType.SCHEMA]
     schema_owners = adapter.get_schema_owners(*schemas)
-    a: list[tuple[str, str]] = [p.object_name for p in privileges if p.object_type in TABLE_LIKE]
-    table_owners = adapter.get_table_owners(*a)
-    table_schema_owners = adapter.get_schema_owners(*(schema for schema, _ in a))
+    tables = (cast(tuple[str, str], p.object_name) for p in privileges if p.object_type == DbObjectType.TABLE)
+    table_owners = adapter.get_table_owners(*tables)
+    table_schema_owners = adapter.get_schema_owners(*(schema for schema, _ in tables))
 
     return {
         *database_owners,
@@ -335,10 +330,10 @@ def _sort_grant_operations(op: GrantOperation) -> tuple:
     op_type_key = op_type_order.get(op.type_, 99)
 
     if op.type_ == GrantOperationType.GRANT:
-        obj_type_order = {'cluster': 0, 'schema': 1, 'role': 2}
+        obj_type_order = {DbObjectType.DATABASE: 0, DbObjectType.SCHEMA: 1, DbObjectType.ROLE: 2}
         obj_type_key = obj_type_order.get(op.privilege.object_type, 99)
 
-    if op.privilege.object_type == 'schema':
+    if op.privilege.object_type == DbObjectType.SCHEMA:
         schema_priv_order = {Privilege.OWN: 0, Privilege.CREATE: 1, Privilege.USAGE: 2}
         priv_key = schema_priv_order.get(op.privilege.privilege, 99)
 
