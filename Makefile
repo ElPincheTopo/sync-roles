@@ -28,7 +28,7 @@ check-mypy:
 
 # Tests ########################################################################
 
-run-tests: #check-code
+run-tests: check-code
 	@.venv/bin/pytest -p no:cacheprovider --color=yes --durations=20 --cov --cov-report=term -m "not slow"
 
 start-fixtures:
