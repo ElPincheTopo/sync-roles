@@ -300,7 +300,7 @@ def _generate_owners(adapter: DatabaseAdapter, role_name: str, *privileges: Priv
     )
     schemas = [cast(str, p.object_name) for p in privileges if p.object_type == DbObjectType.SCHEMA]
     schema_owners = adapter.get_schema_owners(*schemas)
-    tables = (cast(tuple[str, str], p.object_name) for p in privileges if p.object_type == DbObjectType.TABLE)
+    tables = [cast(tuple[str, str], p.object_name) for p in privileges if p.object_type == DbObjectType.TABLE]
     table_owners = adapter.get_table_owners(*tables)
     table_schema_owners = adapter.get_schema_owners(*(schema for schema, _ in tables))
 
