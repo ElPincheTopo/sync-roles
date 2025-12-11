@@ -74,9 +74,9 @@ def sync_roles(
     RuntimeError
         If an available name for a helper ACL role cannot be found when creating helper roles.
     """
+    log.info(f'Running sync_roles for {role_name!r}')
     _validate_grants(grants)
     adapter = _get_adapter(conn)
-    log.info(f'  ---- Startting for user {role_name}: {"-" * 40} ')
     with adapter.transaction():
         # NOTE: Instead of returning grants, return operations so we can include
         # the create role and schema ops at this stage. In phase 2 do extra
@@ -90,10 +90,6 @@ def sync_roles(
         to_revoke = existing_permissions - proposed_permissions
         role_to_create = not adapter.role_exists(role_name)
 
-        log.info(f'{to_grant} | {to_revoke} | {role_to_create}')
-        log.info('-' * 80)
-        log.info(f'{proposed_permissions} | {existing_permissions} | {valid_grants}')
-        log.info('-' * 80)
         if not to_grant and not to_revoke and not role_to_create:
             log.info('Existing state matches requested state. Exit.')
             return
@@ -127,6 +123,7 @@ def sync_roles(
 
         with adapter.temporary_grant_of(owners):
             for change in sorted_changes:
+                log.info(f'Applying {change}')
                 adapter.grant(change)
 
 

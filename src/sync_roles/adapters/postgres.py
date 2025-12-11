@@ -44,7 +44,7 @@ except ImportError:
     sql3 = None
 
 
-logger = logging.getLogger(__name__)
+log = logging.getLogger(__name__)
 
 
 # SQL queries for PostgreSQL
@@ -731,7 +731,6 @@ class PostgresAdapter(DatabaseAdapter):
     @lru_cache  # noqa: B019
     def _generate_acl_role_name(self, object_type: str, object_name: str) -> str:
         """Generate a unique intermediate role name."""
-        logger.warning(object_name)
         base_name = self._acl_role_templates[object_type]  # NOTE: Fix this
         for _ in range(10):
             role_name = f'{base_name}{uuid4().hex[:8]}'
@@ -771,7 +770,7 @@ class PostgresAdapter(DatabaseAdapter):
         it will roll back. The REVOKE is not in a finally: block because if there was an
         exception this will then cause another error.
         """
-        logger.info(f'Temporarily granting roles {role_names} to CURRENT_USER')
+        log.debug(f'Temporarily granting roles {role_names} to CURRENT_USER')
         if role_names:
             self._execute_sql(
                 self.sql.SQL('GRANT {role_names} TO CURRENT_USER').format(
@@ -779,7 +778,7 @@ class PostgresAdapter(DatabaseAdapter):
                 ),
             )
         yield
-        logger.info(f'Revoking roles {role_names} from CURRENT_USER')
+        log.debug(f'Revoking roles {role_names} from CURRENT_USER')
         if role_names:
             self._execute_sql(
                 self.sql.SQL('REVOKE {role_names} FROM CURRENT_USER').format(
@@ -791,7 +790,6 @@ class PostgresAdapter(DatabaseAdapter):
 
     def grant(self, grant_operation: GrantOperation):
         """Grant a privilege on an object to a role."""
-        logger.info(f'Applying {grant_operation}')
         match grant_operation.type_:
             case GrantOperationType.CREATE:
                 match grant_operation.privilege.privilege:
@@ -804,7 +802,9 @@ class PostgresAdapter(DatabaseAdapter):
                             schema_name=self.sql.Identifier(grant_operation.privilege.object_name),
                         )
                     case _:
-                        raise Exception(f'Nooooooooooooooo: {grant_operation}')
+                        raise Exception(
+                            f'Unrecognised privilege type {grant_operation.type_!r} for grant: {grant_operation}',
+                        )
             case _:
                 match grant_operation.privilege.privilege:
                     case Privilege.OWN:
@@ -905,19 +905,19 @@ class PostgresAdapter(DatabaseAdapter):
         Args:
             lock_key (int): Lock identifier for safe operation
         """
-        logger.info('Dropping unused roles...')
+        log.info('Dropping unused roles...')
 
         with self.transaction():
             results = self._execute_sql(self.sql.SQL(_UNUSED_ROLES_SQL)).fetchall()
 
             if not results:
-                logger.info('No roles to drop')
+                log.info('No roles to drop')
                 return
 
             self.lock(lock_key)
 
             for (role_name,) in results:
-                logger.info('Dropping role %s', role_name)
+                log.info('Dropping role %s', role_name)
                 self._execute_sql(
                     self.sql.SQL('DROP ROLE {role_name}').format(role_name=self.sql.Identifier(role_name)),
                 )
