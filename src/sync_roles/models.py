@@ -163,7 +163,13 @@ class Login:
     """
 
     valid_until: datetime | None = None
-    password: str | None = None
+    password: str | None = field(default=None, repr=False)
+
+    def __repr__(self) -> str:
+        """Custom repr to avoid exposing the password in logs."""
+        password_repr = '*****' if self.password is not None else None
+
+        return f'{self.__class__.__name__}(valid_until={self.valid_until!r}, password={password_repr!r})'
 
 
 @dataclass(frozen=True)
