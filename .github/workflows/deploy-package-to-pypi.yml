@@ -8,27 +8,24 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v3
-        with:
-          python-version: 3.11
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
 
-      - name: Update version in pyproject.toml from current git tag
-        run: >-
-          sed -i "s/0\\.0\\.0\\.dev0/${GITHUB_REF/refs\/tags\/v/}/g" pyproject.toml
+      - name: Set up Python
+        run: make dev-setup
 
-      - run: |
-          pip install build
-          python -m build
+      - name: Build package
+        run: make build
 
-      - uses: actions/upload-artifact@v4
-        with:
-          path: ./dist
+      - name: Deploy package to PyPI
+        run: make deploy
 
   deploy:
-    needs: ['build']
-    environment: 'pypi'
+    needs: [build]
+    # environment: pypi
 
     name: upload release to PyPI
     runs-on: ubuntu-latest
