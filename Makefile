@@ -8,7 +8,7 @@ DEFAULT: tasks
 
 dev-setup: clean
 	@uv venv --clear
-	@uv sync --active --dev
+	@uv sync --locked --active --dev
 
 pip-compile:
 	@$(UV_CMD) lock --upgrade
