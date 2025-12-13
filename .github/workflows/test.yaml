@@ -123,13 +123,14 @@ jobs:
         uses: astral-sh/setup-uv@v7
         with:
           python-version: ${{ matrix.python-version }}
-        
-      - name: "Set up Python ${{ matrix.python-version }}"
-        run: make dev-setup
 
+      
       - name: "Run PostgreSQL"
         run: |
           ./start-services.sh ${{ matrix.postgresql-version }}
+
+      - name: "Set up Python ${{ matrix.python-version }}"
+        run: make dev-setup
 
       - name: "Wait for PostgreSQL"
         run: "timeout 60 bash -c 'until echo > /dev/tcp/127.0.0.1/5432; do sleep 5; done'"
