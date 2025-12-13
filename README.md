@@ -1,4 +1,4 @@
-# sync-roles
+# sync-roles [![PyPI package](https://img.shields.io/pypi/v/sync-roles?label=PyPI%20package)](https://pypi.org/project/sync-roles/) | [![Tests](https://img.shields.io/github/actions/workflow/status/ElPincheTopo/sync-roles/test.yaml?label=Tests)](https://github.com/ElPincheTopo/sync-roles/actions/workflows/test.yaml) | [![Coverage](https://img.shields.io/codecov/c/github/ElPincheTopo/sync-roles?label=Coverage)](https://app.codecov.io/gh/ElPincheTopo/sync-roles)
 
 Fork of `pg-sync-roles`([Github](https://github.com/uktrade/pg-sync-roles) | [PyPI](https://pypi.org/project/pg-sync-roles/)) made by the UK Department for Business and Trade. The parent repo doesn't seem to be accessible in Github anymore.
 
@@ -8,7 +8,7 @@ Currently the code is 100% compatible with the original package, but because it'
 
 Work in progress.
 
-# pg-sync-roles [![PyPI package](https://img.shields.io/pypi/v/pg-sync-roles?label=PyPI%20package)](https://pypi.org/project/pg-sync-roles/) [![Test suite](https://img.shields.io/github/actions/workflow/status/uktrade/pg-sync-roles/test.yaml?label=Test%20suite)](https://github.com/uktrade/pg-sync-roles/actions/workflows/test.yaml) [![Code coverage](https://img.shields.io/codecov/c/github/uktrade/pg-sync-roles?label=Code%20coverage)](https://app.codecov.io/gh/uktrade/pg-sync-roles)
+## pg-sync-roles [![PyPI package](https://img.shields.io/pypi/v/pg-sync-roles?label=PyPI%20package)](https://pypi.org/project/pg-sync-roles/) [![Test suite](https://img.shields.io/github/actions/workflow/status/uktrade/pg-sync-roles/test.yaml?label=Test%20suite)](https://github.com/uktrade/pg-sync-roles/actions/workflows/test.yaml) [![Code coverage](https://img.shields.io/codecov/c/github/uktrade/pg-sync-roles?label=Code%20coverage)](https://app.codecov.io/gh/uktrade/pg-sync-roles)
 
 Python utility functions to ensure that PostgreSQL roles have certain privileges on database objects or memberships of other roles - useful to periodically synchronise PostgreSQL's role and privilege system with an external store.
 
