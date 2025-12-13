@@ -14,7 +14,7 @@ pip-compile:
 	@$(UV_CMD) lock --upgrade
 
 pip-sync:
-	@$(UV_CMD) sync --active --dev
+	@$(UV_CMD) sync --locked --active --dev
 
 # Code checks ##################################################################
 
