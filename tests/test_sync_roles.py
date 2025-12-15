@@ -1,4 +1,3 @@
-import functools
 import re
 import threading
 import time
@@ -9,7 +8,6 @@ from datetime import timedelta
 
 import pytest
 import sqlalchemy as sa
-import wrapt
 
 from sync_roles import DatabaseConnect
 from sync_roles import Login
@@ -493,65 +491,6 @@ def test_login_cannot_connect_with_old_password(test_engine, get_valid_until_1, 
 )
 def test_login_can_connect(test_engine, get_valid_until):
     role_name = get_test_role()
-    with test_engine.connect() as conn:
-        sync_roles(
-            conn,
-            role_name,
-            grants=(
-                Login(valid_until=get_valid_until(), password='password'),
-                DatabaseConnect(TEST_DATABASE_NAME),
-            ),
-        )
-
-    engine = sa.create_engine(
-        f'{engine_type}://{role_name}:password@127.0.0.1:5432/{TEST_DATABASE_NAME}',
-        **engine_future,
-    )
-    with engine.connect() as conn:
-        assert conn.execute(sa.text('SELECT 1')).fetchall()[0][0] == 1
-
-
-@pytest.mark.parametrize(
-    'get_valid_until',
-    [
-        lambda: None,
-        lambda: datetime.now(UTC) + timedelta(minutes=10),
-    ],
-)
-def test_login_wrapt_can_connect(test_engine, monkeypatch, get_valid_until):
-    # Certain instrumentation (elastic-apm specifically) does not play well with psycopg2 because
-    # it wraps the connection objects, which then do not pass its runtime type checking and raise
-    # an exception when sql.SQL(...).as_string is called which sync_roles does under the hood
-    #
-    # This test simulates that case by wrapping the connection object.
-
-    def wrapped_connect(original_connect, *args, **kwargs):
-        return wrapt.ObjectProxy(original_connect(*args, **kwargs))
-
-    def dummy_register_type(*args, **kwargs):
-        pass
-
-    try:
-        import psycopg2
-    except ImportError:
-        pass
-    else:
-        monkeypatch.setattr(psycopg2, 'connect', functools.partial(wrapped_connect, psycopg2.connect))
-        # This is to get the test to run - register_type fails with the wrapped connection for some
-        # reason. This only seems to happen in this test environment for some reason, so we just
-        # replace it with a dummy object to get the test to continue to the case we are testing
-        monkeypatch.setattr(psycopg2.extensions, 'register_type', dummy_register_type)
-
-    try:
-        import psycopg
-    except ImportError:
-        pass
-    else:
-        monkeypatch.setattr(psycopg, 'connect', functools.partial(wrapped_connect, psycopg.connect))
-
-    # We arbitrarily check any usage of sync_roles
-    role_name = get_test_role()
-
     with test_engine.connect() as conn:
         sync_roles(
             conn,

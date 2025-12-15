@@ -49,7 +49,6 @@ dev = [
     "pytest>=7.4.4",
     "types-psycopg2",
     "uv",
-    "wrapt>=1.4.1",
 ]
 lint = [
     "mypy",
@@ -227,36 +226,3 @@ show_missing = true
 
 
 ################################################################################
-
-
-# ci = [
-#   "pytest==7.4.4",
-#   # At the time of writing, 1.14.1 is the latest version of wrapt that the latest version of
-#   # elastic-apm can be installed with
-#   "wrapt==1.14.1",
-#   "pytest-cov",
-# ]
-# ci-psycopg2-sqlalchemy1 = [
-#     "psycopg2==2.9.2",
-#     "sqlalchemy==1.4.24",
-# ]
-# ci-psycopg2-9-10-sqlalchemy1 = [
-#     "psycopg2==2.9.10",
-#     "sqlalchemy==1.4.24",
-# ]
-# ci-psycopg2-sqlalchemy2 = [
-#     "psycopg2==2.9.2",
-#     "sqlalchemy==2.0.0",
-# ]
-# ci-psycopg2-9-10-sqlalchemy2-0-31 = [
-#     "psycopg2==2.9.10",
-#     "sqlalchemy==2.0.31",
-# ]
-# ci-psycopg3-sqlalchemy2 = [
-#     "psycopg==3.1.4",
-#     "sqlalchemy==2.0.0",
-# ]
-# ci-psycopg3-sqlalchemy2-0-31 = [
-#     "psycopg==3.1.4",
-#     "sqlalchemy==2.0.31",
-# ]
