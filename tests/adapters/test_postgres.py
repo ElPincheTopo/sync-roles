@@ -10,6 +10,8 @@ from sync_roles.adapters.postgres import PostgresAdapter
 from sync_roles.models import DatabaseConnect
 from sync_roles.models import DbObjectType
 from sync_roles.models import Grant
+from sync_roles.models import GrantOperation
+from sync_roles.models import GrantOperationType
 from sync_roles.models import Privilege
 from sync_roles.models import PrivilegeRecord
 from sync_roles.models import RoleMembership
@@ -168,3 +170,27 @@ def test_build_proposed_permission_in_postgres_adapter(
         assert result2.grant is None
 
         assert result1.grantee == result2.object_name
+
+
+def test_grant_raises(test_engine) -> None:
+    msg = (
+        'Unrecognised privilege type <GrantOperationType.CREATE: 3> for grant: '
+        'GrantOperation(type_=<GrantOperationType.CREATE: 3>, privilege=PrivilegeRecord('
+        "object_type=<DbObjectType.DATABASE: 1>, object_name='a_database', privilege=<Privilege.CONNECT: 9>, "
+        "grantee='tun', grant=None))"
+    )
+    with test_engine.connect() as conn:
+        adapter = PostgresAdapter(conn)
+        with pytest.raises(ValueError, match=re.escape(msg)):
+            adapter.grant(
+                GrantOperation(
+                    GrantOperationType.CREATE,
+                    PrivilegeRecord(DbObjectType.DATABASE, 'a_database', Privilege.CONNECT, 'tun', None),
+                ),
+            )
+
+
+def test_get_roles_with_no_role_names(test_engine) -> None:
+    with test_engine.connect() as conn:
+        adapter = PostgresAdapter(conn)
+        assert adapter.get_roles() == []

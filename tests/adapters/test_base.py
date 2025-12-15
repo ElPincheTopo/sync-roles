@@ -1,3 +1,4 @@
+import re
 import zoneinfo
 from datetime import UTC
 from datetime import datetime
@@ -112,3 +113,18 @@ def test_build_proposed_permission(
         assert super(PostgresAdapter, adapter).build_proposed_permission(user, grant) == {
             PrivilegeRecord(type_, name, privilege, user, grant),
         }
+
+
+@pytest.mark.parametrize('direct', [True, False])
+def test_build_proposed_permission_for_table_select_raises(test_engine, direct: bool) -> None:
+    msg = (
+        "Table name on Grant TableSelect(schema_name='public', table_name=re.compile('emp.*'), "
+        f"direct={direct}) should be of type `str`, got `re.compile('emp.*')`"
+    )
+    with test_engine.connect() as conn:
+        adapter = PostgresAdapter(conn)
+        with pytest.raises(ValueError, match=re.escape(msg)):
+            super(PostgresAdapter, adapter).build_proposed_permission(
+                'tun',
+                TableSelect(schema_name='public', table_name=re.compile(r'emp.*'), direct=direct),
+            )

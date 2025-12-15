@@ -802,7 +802,7 @@ class PostgresAdapter(DatabaseAdapter):
                             schema_name=self.sql.Identifier(grant_operation.privilege.object_name),
                         )
                     case _:
-                        raise Exception(
+                        raise ValueError(
                             f'Unrecognised privilege type {grant_operation.type_!r} for grant: {grant_operation}',
                         )
             case _:
