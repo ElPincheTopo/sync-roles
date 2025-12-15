@@ -29,10 +29,11 @@ jobs:
         #   - "postgres:16.0"
         #   - "postgres:17.0"
         ci-extras:
-            - dev
-        #   - ci-psycopg2-sqlalchemy1
-        #   - ci-psycopg2-sqlalchemy2
-        #   - ci-psycopg3-sqlalchemy2
+            # - dev
+            - ci-psycopg2-sqlalchemy1
+            - ci-psycopg2-sqlalchemy2
+            - ci-psycopg3-sqlalchemy1
+            - ci-psycopg3-sqlalchemy2
         # include:
         #   - python-version: "3.13.0"
         #     ci-extras: ci-psycopg2-9-10-sqlalchemy1
@@ -124,13 +125,12 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      
       - name: "Run PostgreSQL"
         run: |
           ./start-services.sh ${{ matrix.postgresql-version }}
 
       - name: "Set up Python ${{ matrix.python-version }}"
-        run: make dev-setup
+        run: uv sync --locked --active --group ci --group ${{ matrix.ci-extras }} --no-dev
 
       - name: "Wait for PostgreSQL"
         run: "timeout 60 bash -c 'until echo > /dev/tcp/127.0.0.1/5432; do sleep 5; done'"
