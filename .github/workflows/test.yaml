@@ -31,7 +31,6 @@ jobs:
         ci-extras:
             - ci-psycopg2-sqlalchemy1
             - ci-psycopg2-sqlalchemy2
-            - ci-psycopg3-sqlalchemy1
             - ci-psycopg3-sqlalchemy2
     steps:
       - name: "Checkout"

@@ -67,12 +67,8 @@ ci-psycopg2-sqlalchemy2 = [
     "psycopg2-binary",
     "sqlalchemy>=2.0.0",
 ]
-ci-psycopg3-sqlalchemy1 = [
-    "psycopg",
-    "sqlalchemy<2.0.0",
-]
 ci-psycopg3-sqlalchemy2 = [
-    "psycopg",
+    "psycopg[dev]",
     "sqlalchemy>=2.0.0",
 ]
 
