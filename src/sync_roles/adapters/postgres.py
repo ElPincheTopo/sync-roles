@@ -11,6 +11,7 @@ from dataclasses import replace
 from functools import lru_cache
 from types import ModuleType
 from typing import cast
+from typing import overload
 from uuid import uuid4
 
 import sqlalchemy as sa
@@ -697,22 +698,7 @@ class PostgresAdapter(DatabaseAdapter):
         ):
             return super().build_proposed_permission(role_name, grant)
 
-        object_name: str | tuple[str, str]
-        match grant:
-            case DatabaseConnect():
-                object_name = grant.database_name
-                acl_role_name = self._get_db_acl_roles([grant.database_name]).get(grant.database_name)
-            case SchemaUsage():
-                object_name = grant.schema_name
-                acl_role_name = self._get_schema_usage_acl_roles([object_name]).get(object_name)
-            case SchemaCreate():
-                object_name = grant.schema_name
-                acl_role_name = self._get_schema_create_acl_roles([object_name]).get(object_name)
-            case TableSelect():
-                object_name = (grant.schema_name, cast(str, grant.table_name))
-                acl_role_name = self._get_table_select_acl_roles([object_name]).get(object_name)
-            case _:
-                ValueError(f'Invalid grant type. Expected `SchemaUsage, SchemaCreate or TableSelect`, got {grant}.')
+        object_name, acl_role_name = self._get_existing_acl_name(grant)
 
         privileges = []
 
@@ -727,6 +713,34 @@ class PostgresAdapter(DatabaseAdapter):
             *privileges,
             PrivilegeRecord(DbObjectType.ROLE, acl_role_name, Privilege.ROLE_MEMBERSHIP, role_name),
         }
+
+    @overload
+    def _get_existing_acl_name(self, grant: TableSelect) -> tuple[tuple[str, str], str | None]: ...
+
+    @overload
+    def _get_existing_acl_name(self, grant: DatabaseConnect | SchemaUsage | SchemaCreate) -> tuple[str, str | None]: ...
+
+    def _get_existing_acl_name(self, grant: Grant) -> tuple[str | tuple[str, str], str | None]:
+        object_name: str | tuple[str, str]
+        match grant:
+            case DatabaseConnect():
+                object_name = grant.database_name
+                acl_role_name = self._get_db_acl_roles([grant.database_name]).get(object_name)
+            case SchemaUsage():
+                object_name = grant.schema_name
+                acl_role_name = self._get_schema_usage_acl_roles([object_name]).get(object_name)
+            case SchemaCreate():
+                object_name = grant.schema_name
+                acl_role_name = self._get_schema_create_acl_roles([object_name]).get(object_name)
+            case TableSelect():
+                object_name = (grant.schema_name, cast(str, grant.table_name))
+                acl_role_name = self._get_table_select_acl_roles([object_name]).get(object_name)
+            case _:
+                raise ValueError(
+                    'Invalid grant type. Expected `DatabaseConnect, SchemaUsage, '
+                    f'SchemaCreate or TableSelect`, got {grant}.',
+                )
+        return object_name, acl_role_name
 
     @lru_cache  # noqa: B019
     def _generate_acl_role_name(self, object_type: str, object_name: str) -> str:

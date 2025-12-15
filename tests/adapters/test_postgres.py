@@ -172,6 +172,29 @@ def test_build_proposed_permission_in_postgres_adapter(
         assert result1.grantee == result2.object_name
 
 
+@pytest.mark.parametrize(
+    'grant',
+    [
+        Login(),
+        Login(valid_until=datetime(2000, 1, 1)),
+        Login(valid_until=datetime(2000, 1, 1, tzinfo=UTC)),
+        Login(valid_until=datetime(2000, 1, 1, tzinfo=NZ_TZ)),
+        Login(password='some-password'),
+        Login(valid_until=datetime(2000, 1, 1), password='some-password'),
+        Login(valid_until=datetime(2000, 1, 1, tzinfo=UTC), password='some-password'),
+        Login(valid_until=datetime(2000, 1, 1, tzinfo=NZ_TZ), password='some-password'),
+        SchemaOwnership(schema_name='public'),
+        RoleMembership('a_role_name'),
+    ],
+)
+def test_get_existing_acl_name(test_engine, grant: Grant) -> None:
+    msg = f'Invalid grant type. Expected `DatabaseConnect, SchemaUsage, SchemaCreate or TableSelect`, got {grant}.'
+    with test_engine.connect() as conn:
+        adapter = PostgresAdapter(conn)
+        with pytest.raises(ValueError, match=re.escape(msg)):
+            adapter._get_existing_acl_name(grant)  # type: ignore
+
+
 def test_grant_raises(test_engine) -> None:
     msg = (
         'Unrecognised privilege type <GrantOperationType.CREATE: 3> for grant: '
