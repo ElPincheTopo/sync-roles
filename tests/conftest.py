@@ -154,3 +154,10 @@ def test_sequence(test_engine, test_table):
 
     with test_engine.begin() as conn:
         conn.execute(sa.text(f'DROP SEQUENCE IF EXISTS {schema_name}.{sequence_name}'))
+
+
+@pytest.fixture
+def test_sqlite_engine():
+    engine = sa.create_engine('sqlite:///:memory:', **engine_future)
+    yield engine
+    engine.dispose()
