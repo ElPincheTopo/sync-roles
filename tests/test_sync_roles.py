@@ -8,6 +8,7 @@ from datetime import timedelta
 
 import pytest
 import sqlalchemy as sa
+from sqlalchemy import exc
 
 from sync_roles import DatabaseConnect
 from sync_roles import Login
@@ -201,7 +202,7 @@ def test_lock_can_timeout_and_connection_is_usable(test_engine, grants):
         conn_sync.execute(sa.text("SET statement_timeout = '500ms'"))
         conn_sync.commit()
 
-        with pytest.raises(sa.exc.OperationalError, match='canceling statement due to statement timeout'):
+        with pytest.raises(exc.OperationalError, match='canceling statement due to statement timeout'):
             sync_roles(conn_sync, role_name, grants=grants, lock_key=1)
 
         # Asserts that we've rolled back
@@ -236,7 +237,7 @@ def test_login_expired_valid_until_cannot_connect(test_engine):
         f'{engine_type}://{role_name}:password@127.0.0.1:5432/{TEST_DATABASE_NAME}',
         **engine_future,
     )
-    with pytest.raises(sa.exc.OperationalError, match='password authentication failed'):
+    with pytest.raises(exc.OperationalError, match='password authentication failed'):
         engine.connect()
 
 
@@ -264,7 +265,7 @@ def test_login_incorrect_password_cannot_connect(test_engine, get_valid_until):
         f'{engine_type}://{role_name}:not-the-password@127.0.0.1:5432/{TEST_DATABASE_NAME}',
         **engine_future,
     )
-    with pytest.raises(sa.exc.OperationalError, match='password authentication failed'):
+    with pytest.raises(exc.OperationalError, match='password authentication failed'):
         engine.connect()
 
 
@@ -294,7 +295,7 @@ def test_login_is_only_applied_to_passed_role(test_engine, get_valid_until):
         f'{engine_type}://{role_name_without_login}:password@127.0.0.1:5432/{TEST_DATABASE_NAME}',
         **engine_future,
     )
-    with pytest.raises(sa.exc.OperationalError, match='password authentication failed'):
+    with pytest.raises(exc.OperationalError, match='password authentication failed'):
         engine.connect()
 
 
@@ -314,7 +315,7 @@ def test_login_without_database_connect_cannot_connect(test_engine, get_valid_un
         f'{engine_type}://{role_name}:password@127.0.0.1:5432/{TEST_DATABASE_NAME}',
         **engine_future,
     )
-    with pytest.raises(sa.exc.OperationalError, match='User does not have CONNECT privilege'):
+    with pytest.raises(exc.OperationalError, match='User does not have CONNECT privilege'):
         engine.connect()
 
 
@@ -341,7 +342,7 @@ def test_login_with_different_database_connect_cannot_connect(root_engine, test_
         f'{engine_type}://{role_name}:password@127.0.0.1:5432/{TEST_DATABASE_NAME}',
         **engine_future,
     )
-    with pytest.raises(sa.exc.OperationalError, match='User does not have CONNECT privilege'):
+    with pytest.raises(exc.OperationalError, match='User does not have CONNECT privilege'):
         engine.connect()
 
 
@@ -370,7 +371,7 @@ def test_login_with_valid_until_initialy_future_but_changed_to_be_in_the_past_ca
         f'{engine_type}://{role_name}:password@127.0.0.1:5432/{TEST_DATABASE_NAME}',
         **engine_future,
     )
-    with pytest.raises(sa.exc.OperationalError, match='password authentication failed'):
+    with pytest.raises(exc.OperationalError, match='password authentication failed'):
         engine.connect()
 
 
@@ -405,7 +406,7 @@ def test_login_with_with_connect_then_revoked_cannot_connect(test_engine, get_va
         f'{engine_type}://{role_name}:password@127.0.0.1:5432/{TEST_DATABASE_NAME}',
         **engine_future,
     )
-    with pytest.raises(sa.exc.OperationalError, match='User does not have CONNECT privilege'):
+    with pytest.raises(exc.OperationalError, match='User does not have CONNECT privilege'):
         engine.connect()
 
 
@@ -434,7 +435,7 @@ def test_login_with_with_connect_then_login_revoked_cannot_connect(test_engine, 
         f'{engine_type}://{role_name}:password@127.0.0.1:5432/{TEST_DATABASE_NAME}',
         **engine_future,
     )
-    with pytest.raises(sa.exc.OperationalError, match='password authentication failed'):
+    with pytest.raises(exc.OperationalError, match='password authentication failed'):
         engine.connect()
 
 
@@ -478,7 +479,7 @@ def test_login_cannot_connect_with_old_password(test_engine, get_valid_until_1, 
         f'{engine_type}://{role_name}:password@127.0.0.1:5432/{TEST_DATABASE_NAME}',
         **engine_future,
     )
-    with pytest.raises(sa.exc.OperationalError, match='password authentication failed'):
+    with pytest.raises(exc.OperationalError, match='password authentication failed'):
         engine.connect()
 
 
@@ -579,7 +580,7 @@ def test_login_cannot_connect_after_second_sync_with_no_password_and_valid_until
         f'{engine_type}://{role_name}:password@127.0.0.1:5432/{TEST_DATABASE_NAME}',
         **engine_future,
     )
-    with pytest.raises(sa.exc.OperationalError, match='password authentication failed'):
+    with pytest.raises(exc.OperationalError, match='password authentication failed'):
         engine.connect()
 
 
@@ -739,7 +740,7 @@ def test_table_select_never_granted_cannot_query(
     )
     with (
         engine.connect() as conn,
-        pytest.raises(sa.exc.ProgrammingError, match=r'permission denied for (table|relation)'),
+        pytest.raises(exc.ProgrammingError, match=r'permission denied for (table|relation)'),
     ):
         assert conn.execute(sa.text(f'SELECT count(*) FROM {schema_name}.{table_name}')).fetchall()[0][0] == 0
 
@@ -784,7 +785,7 @@ def test_table_select_granted_then_revoked_cannot_query(
     )
     with (
         engine.connect() as conn,
-        pytest.raises(sa.exc.ProgrammingError, match=r'permission denied for (table|relation)'),
+        pytest.raises(exc.ProgrammingError, match=r'permission denied for (table|relation)'),
     ):
         assert conn.execute(sa.text(f'SELECT count(*) FROM {schema_name}.{table_name}')).fetchall()[0][0] == 0
 
@@ -810,7 +811,7 @@ def test_table_select_usage_never_granted_cannot_query(test_engine, test_table, 
         f'{engine_type}://{role_name}:password@127.0.0.1:5432/{TEST_DATABASE_NAME}',
         **engine_future,
     )
-    with engine.connect() as conn, pytest.raises(sa.exc.ProgrammingError, match='permission denied for schema'):
+    with engine.connect() as conn, pytest.raises(exc.ProgrammingError, match='permission denied for schema'):
         assert conn.execute(sa.text(f'SELECT count(*) FROM {schema_name}.{table_name}')).fetchall()[0][0] == 0
 
 
@@ -854,7 +855,7 @@ def test_table_select_granted_then_usage_revoked_cannot_query(
         f'{engine_type}://{role_name}:password@127.0.0.1:5432/{TEST_DATABASE_NAME}',
         **engine_future,
     )
-    with engine.connect() as conn, pytest.raises(sa.exc.ProgrammingError, match='permission denied for schema'):
+    with engine.connect() as conn, pytest.raises(exc.ProgrammingError, match='permission denied for schema'):
         assert conn.execute(sa.text(f'SELECT count(*) FROM {schema_name}.{table_name}')).fetchall()[0][0] == 0
 
 
@@ -945,7 +946,7 @@ def test_table_select_via_regex_granted_can_query(
     # Assert we can't query tables not matching regex in the schema
     with (
         engine.connect() as conn,
-        pytest.raises(sa.exc.ProgrammingError, match=r'permission denied for (table|relation)'),
+        pytest.raises(exc.ProgrammingError, match=r'permission denied for (table|relation)'),
     ):
         assert (
             conn.execute(
@@ -957,7 +958,7 @@ def test_table_select_via_regex_granted_can_query(
     # Assert we can't query tables that match the regex, but are in another schema
     with (
         engine.connect() as conn,
-        pytest.raises(sa.exc.ProgrammingError, match=r'permission denied for (table|relation)'),
+        pytest.raises(exc.ProgrammingError, match=r'permission denied for (table|relation)'),
     ):
         assert (
             conn.execute(
@@ -1403,7 +1404,7 @@ def test_schema_ownership_and_usage(test_engine, test_table, direct):
         )
 
         # If we didn't have USAGE, the exception would mention schema permission
-        with pytest.raises(sa.exc.ProgrammingError, match=r'permission denied for (table|relation)'):
+        with pytest.raises(exc.ProgrammingError, match=r'permission denied for (table|relation)'):
             assert conn.execute(sa.text(f'SELECT count(*) FROM {schema_name}.{table_name}')).fetchall()[0][0] == 0
 
 
@@ -1453,7 +1454,7 @@ def test_direct_table_permission_can_be_revoked(test_engine, test_table, direct)
 
     with (
         engine.connect() as conn,
-        pytest.raises(sa.exc.ProgrammingError, match=r'permission denied for (table|relation)'),
+        pytest.raises(exc.ProgrammingError, match=r'permission denied for (table|relation)'),
     ):
         assert conn.execute(sa.text(f'SELECT count(*) FROM {schema_name}.{table_name}')).fetchall()[0][0] == 0
 
@@ -1504,7 +1505,7 @@ def test_direct_table_permission_can_be_revoked_when_not_owner(test_engine, test
 
     with (
         role_2_engine.connect() as conn,
-        pytest.raises(sa.exc.ProgrammingError, match=r'permission denied for (table|relation)'),
+        pytest.raises(exc.ProgrammingError, match=r'permission denied for (table|relation)'),
     ):
         assert conn.execute(sa.text(f'SELECT count(*) FROM {schema_name}.{table_name}')).fetchall()[0][0] == 0
 
@@ -1545,7 +1546,7 @@ def test_default_table_permission_from_ownership_revoked(test_engine, test_table
 
     with (
         role_engine.connect() as conn,
-        pytest.raises(sa.exc.ProgrammingError, match=r'permission denied for (table|relation)'),
+        pytest.raises(exc.ProgrammingError, match=r'permission denied for (table|relation)'),
     ):
         assert conn.execute(sa.text(f'SELECT count(*) FROM {schema_name}.{table_name}')).fetchall()[0][0] == 0
 
@@ -1581,7 +1582,7 @@ def test_direct_view_permission_is_revoked(test_engine, test_view, direct):
 
     with (
         engine.connect() as conn,
-        pytest.raises(sa.exc.ProgrammingError, match=r'permission denied for (view|relation)'),
+        pytest.raises(exc.ProgrammingError, match=r'permission denied for (view|relation)'),
     ):
         assert conn.execute(sa.text(f'SELECT count(*) FROM {schema_name}.{view_name}')).fetchall()[0][0] == 0
 
@@ -1615,7 +1616,7 @@ def test_direct_sequence_permission_is_revoked(test_engine, test_sequence, direc
             ),
         )
 
-    with engine.connect() as conn, pytest.raises(sa.exc.ProgrammingError, match='permission denied for sequence'):
+    with engine.connect() as conn, pytest.raises(exc.ProgrammingError, match='permission denied for sequence'):
         assert conn.execute(sa.text(f"SELECT nextval('{schema_name}.{sequence_name}');")).fetchall()[0][0] == 0
 
 
@@ -1645,7 +1646,7 @@ def test_direct_usage_permission_is_revoked(test_engine, test_sequence):
             ),
         )
 
-    with engine.connect() as conn, pytest.raises(sa.exc.ProgrammingError, match='permission denied for schema'):
+    with engine.connect() as conn, pytest.raises(exc.ProgrammingError, match='permission denied for schema'):
         assert conn.execute(sa.text(f"SELECT nextval('{schema_name}.{sequence_name}');")).fetchall()[0][0] == 0
 
 

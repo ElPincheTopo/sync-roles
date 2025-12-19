@@ -10,6 +10,7 @@ from contextlib import contextmanager
 from dataclasses import replace
 from functools import lru_cache
 from types import ModuleType
+from typing import Any
 from typing import cast
 from typing import overload
 from uuid import uuid4
@@ -31,18 +32,21 @@ from sync_roles.models import SchemaCreate
 from sync_roles.models import SchemaUsage
 from sync_roles.models import TableSelect
 
-sql2: ModuleType | None
-sql3: ModuleType | None
-
+sql2: ModuleType | None = None
 try:
-    from psycopg2 import sql as sql2
-except ImportError:
-    sql2 = None
+    from psycopg2 import sql as _sql2
 
-try:
-    from psycopg import sql as sql3
+    sql2 = _sql2
 except ImportError:
-    sql3 = None
+    pass
+
+sql3: ModuleType | None = None
+try:
+    from psycopg import sql as _sql3
+
+    sql3 = _sql3
+except ImportError:
+    pass
 
 
 log = logging.getLogger(__name__)
@@ -219,13 +223,13 @@ class PostgresAdapter(DatabaseAdapter):
 
         # Choose the correct library for dynamically constructing SQL based on the underlying
         # engine of the SQLAlchemy connection
-        self.sql = {
-            'psycopg2': sql2,
-            'psycopg': sql3,
-        }[conn.engine.driver]
+        if (_sql := {'psycopg2': sql2, 'psycopg': sql3}.get(conn.engine.driver)) is None:
+            raise ImportError(f"The driver '{conn.engine.driver}' is in use, but the library is not installed.")
+
+        self.sql: Any = _sql
 
         # Prepare SQL constants for privileges and object types
-        self._sql_grants: dict[Privilege, self.sql.SQL] = {
+        self._sql_grants: dict[Privilege, Any] = {
             Privilege.SELECT: self.sql.SQL('SELECT'),
             Privilege.INSERT: self.sql.SQL('INSERT'),
             Privilege.UPDATE: self.sql.SQL('UPDATE'),

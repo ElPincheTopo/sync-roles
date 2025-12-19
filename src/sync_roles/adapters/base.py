@@ -183,8 +183,8 @@ class DatabaseAdapter(ABC):
             match grant:
                 case Login():
                     if until := grant.valid_until:
-                        if grant.valid_until.tzinfo is None:
-                            until = grant.valid_until.replace(tzinfo=UTC)
+                        if until.tzinfo is None:
+                            until = until.replace(tzinfo=UTC)
                         valid_until = until.isoformat(timespec='microseconds')
                     else:
                         valid_until = ''

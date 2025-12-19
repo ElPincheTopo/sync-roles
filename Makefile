@@ -1,5 +1,5 @@
-# Can only be used afyter dev-setup. Before that, we use `uv` from the machine.
-UV_CMD = .venv/bin/uv
+VENV = .venv/bin
+UV_CMD = $(VENV)/uv  # Can only be used afyter dev-setup. Before that, we use `uv` from the machine.
 
 DEFAULT: tasks
 
@@ -14,22 +14,25 @@ pip-compile:
 	@$(UV_CMD) lock --upgrade
 
 pip-sync:
-	@$(UV_CMD) sync --locked --active --dev
+	@$(UV_CMD) sync --active --dev
 
 # Code checks ##################################################################
 
-check-code: check-ruff check-mypy
+check-code: check-ruff check-ty check-mypy
 
 check-ruff:
-	@.venv/bin/ruff check
+	@$(VENV)/ruff check
+
+check-ty:
+	@$(VENV)/ty check
 
 check-mypy:
-	@.venv/bin/mypy
+	@$(VENV)/mypy
 
 # Tests ########################################################################
 
 run-tests: check-code
-	@.venv/bin/pytest -p no:cacheprovider --color=yes --durations=20 --cov --cov-report=term -m "not slow"
+	@$(VENV)/pytest -p no:cacheprovider --color=yes --durations=20 --cov --cov-report=term -m "not slow"
 
 start-fixtures:
 	@./start-services.sh

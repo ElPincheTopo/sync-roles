@@ -54,6 +54,7 @@ lint = [
     "mypy",
     "pre-commit",
     "ruff",
+    "ty",
 ]
 ci = [
     "pytest-cov",
@@ -197,9 +198,10 @@ convention = "google"
 
 [tool.mypy]
 python_version = "3.12"
+packages = ["sync_roles"]
 warn_return_any = true
 warn_unused_configs = true
-packages = ["sync_roles"]
+check_untyped_defs = true
 
 
 ################################################################################
